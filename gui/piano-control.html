@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Piano Controller</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --bg: #0e0f13;
+    --panel: #1a1c23;
+    --panel-2: #232631;
+    --border: #2f3441;
+    --text: #e8eaf0;
+    --muted: #8590a3;
+    --accent: #5b8cff;
+    --accent-2: #7eb6ff;
+    --good: #58d68d;
+    --warn: #ffb84d;
+    --bad: #ff6b6b;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: var(--font); color: var(--text);
+    background: var(--bg); padding: 24px;
+    min-height: 100vh;
+  }
+  h1 { margin: 0 0 4px; font-weight: 600; font-size: 22px; }
+  h2 { margin: 0 0 14px; font-weight: 600; font-size: 14px;
+       letter-spacing: .04em; color: var(--muted); text-transform: uppercase; }
+
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding-bottom: 18px; margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  header .meta { color: var(--muted); font-size: 13px; }
+
+  #status-pill {
+    padding: 4px 12px; border-radius: 999px;
+    background: var(--panel-2); color: var(--muted);
+    font-size: 12px; font-weight: 500;
+  }
+  #status-pill.connected { background: rgba(88,214,141,.15); color: var(--good); }
+
+  #panic-btn {
+    background: var(--bad); color: white;
+    padding: 10px 22px; font-weight: 700; font-size: 14px;
+    letter-spacing: .04em; border-radius: 10px;
+    box-shadow: 0 0 0 0 rgba(255,107,107,.5);
+    animation: panic-pulse 2s ease-in-out infinite;
+  }
+  #panic-btn:hover { filter: brightness(1.15); }
+  @keyframes panic-pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(255,107,107,.5); }
+    50%     { box-shadow: 0 0 0 8px rgba(255,107,107,0); }
+  }
+
+  button {
+    appearance: none; border: 0; cursor: pointer;
+    background: var(--accent); color: white;
+    padding: 8px 16px; border-radius: 8px; font: 500 13px var(--font);
+    transition: filter .15s, transform .05s;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:active { transform: translateY(1px); }
+  button.ghost { background: var(--panel-2); color: var(--text);
+                 border: 1px solid var(--border); }
+  button.danger { background: rgba(255,107,107,.18); color: var(--bad);
+                  border: 1px solid rgba(255,107,107,.3); }
+
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill,minmax(320px,1fr));
+    gap: 16px;
+  }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px;
+  }
+
+  .row { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+  .row .label { flex: 1; }
+  .row .value {
+    font-family: var(--mono); font-size: 13px;
+    color: var(--accent-2); min-width: 70px; text-align: right;
+  }
+  label.full { display: block; margin: 14px 0; }
+  label.full .label-line {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 6px;
+  }
+  label.full .name { font-size: 13px; color: var(--text); }
+  label.full .value { font-family: var(--mono); font-size: 13px; color: var(--accent-2); }
+
+  input[type="range"] {
+    width: 100%; appearance: none; height: 6px;
+    background: var(--border); border-radius: 999px; outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none; width: 18px; height: 18px; border-radius: 999px;
+    background: var(--accent); cursor: pointer;
+    box-shadow: 0 1px 4px rgba(91,140,255,.4);
+  }
+  input[type="number"], select {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; font: 500 13px var(--mono);
+  }
+  input[type="number"] { width: 80px; }
+
+  .switch {
+    position: relative; width: 44px; height: 24px;
+    background: var(--border); border-radius: 999px;
+    cursor: pointer; transition: background .15s;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 3px; left: 3px;
+    width: 18px; height: 18px; border-radius: 999px;
+    background: white; transition: transform .15s;
+  }
+  .switch.on { background: var(--accent); }
+  .switch.on::after { transform: translateX(20px); }
+
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+  .keyboard {
+    margin-top: 12px; display: flex; gap: 1px;
+    overflow-x: auto; padding: 4px;
+    background: var(--panel-2); border-radius: 6px;
+  }
+  .key { flex: 0 0 auto; cursor: pointer; user-select: none;
+         font-size: 9px; color: #888; text-align: center; padding-top: 4px; }
+  .key.white { background: white; color: #444; width: 22px; height: 80px;
+               border-radius: 0 0 3px 3px; }
+  .key.black { background: #1a1a1a; color: #ccc; width: 14px; height: 50px;
+               margin: 0 -7px; z-index: 1; position: relative;
+               border-radius: 0 0 3px 3px; }
+  .key.selected { outline: 2px solid var(--accent); }
+
+  #log {
+    background: #07080c; color: #c2d1e8;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; height: 240px; overflow-y: auto;
+    font: 12px var(--mono); white-space: pre-wrap; word-break: break-word;
+  }
+  #log .out { color: var(--accent-2); }
+
+  .hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Piano Controller</h1>
+    <div class="meta">Web Serial · Chrome/Edge required · 115200 baud</div>
+  </div>
+  <span style="flex:1"></span>
+  <span id="status-pill">Disconnected</span>
+  <button id="connect-btn">Connect</button>
+  <button class="ghost" id="status-btn" disabled>Read status</button>
+  <button id="panic-btn" title="Emergency stop: releases every solenoid via ALLCALL × 5 and forces Full Power mode on">⏻ EMERGENCY STOP</button>
+</header>
+
+<div class="grid">
+
+  <!-- PWM tuning -->
+  <div class="card">
+    <h2>PWM &amp; force</h2>
+    <label class="full">
+      <div class="label-line"><span class="name">Min strike PWM <small>(velocity 1)</small></span>
+        <span class="value" id="min-val">1500</span></div>
+      <input type="range" id="min" min="0" max="4095" value="1500">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Max strike PWM <small>(velocity 127)</small></span>
+        <span class="value" id="max-val">4095</span></div>
+      <input type="range" id="max" min="0" max="4095" value="4095">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Velocity multiplier</span>
+        <span class="value" id="velmult-val">1.00×</span></div>
+      <input type="range" id="velmult" min="10" max="400" value="100">
+    </label>
+    <div class="row">
+      <span class="label">Full power <small>(no PWM, max force)</small></span>
+      <div id="fullpower" class="switch"></div>
+    </div>
+    <div class="row">
+      <span class="label">Key highlight <small>(off saves CPU under heavy MIDI)</small></span>
+      <div id="keyviz" class="switch on"></div>
+    </div>
+  </div>
+
+  <!-- Timing -->
+  <div class="card">
+    <h2>Timing</h2>
+    <label class="full">
+      <div class="label-line"><span class="name">Retrigger gap <small>(same-key NoteOff → NoteOn)</small></span>
+        <span class="value" id="gap-val">30 ms</span></div>
+      <input type="range" id="gap" min="0" max="300" value="30">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Min strike duration <small>(rescues short notes)</small></span>
+        <span class="value" id="minstrike-val">60 ms</span></div>
+      <input type="range" id="minstrike" min="0" max="500" value="60">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Auto re-strike <small>(tremolo sustain for held notes; 0 = off)</small></span>
+        <span class="value" id="restrike-val">off</span></div>
+      <input type="range" id="restrike" min="0" max="400" value="0">
+    </label>
+    <div class="row">
+      <span class="label">Soft release <small>(anti-clank cushion)</small></span>
+      <div id="softrelease" class="switch on"></div>
+    </div>
+    <label class="full">
+      <div class="label-line"><span class="name">Release cushion power <small>(keep low)</small></span>
+        <span class="value" id="releasepwm-val">1100</span></div>
+      <input type="range" id="releasepwm" min="0" max="4095" value="1100">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Release cushion time</span>
+        <span class="value" id="releasems-val">22 ms</span></div>
+      <input type="range" id="releasems" min="0" max="200" value="22">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Hold timeout <small>(auto-release safety)</small></span>
+        <span class="value" id="hold-val">5000 ms</span></div>
+      <input type="range" id="hold" min="50" max="10000" value="5000">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">PWM carrier frequency</span>
+        <span class="value" id="freq-val">1500 Hz</span></div>
+      <input type="range" id="freq" min="24" max="1526" value="1500">
+    </label>
+  </div>
+
+  <!-- Boot self-test sweep -->
+  <div class="card">
+    <h2>Sweep</h2>
+    <label class="full">
+      <div class="label-line"><span class="name">Sweep strike PWM</span>
+        <span class="value" id="pwm-val">2500</span></div>
+      <input type="range" id="pwm" min="0" max="4095" value="2500">
+    </label>
+    <div class="hint">Adjusting this slider triggers a full sweep across every connected board.</div>
+    <div class="btn-row">
+      <button id="sweep-btn">Run sweep now</button>
+      <button class="danger" id="off-btn">All off (panic)</button>
+      <button class="ghost" id="broadcast-btn">ALLCALL FULL_OFF</button>
+    </div>
+  </div>
+
+  <!-- Test note -->
+  <div class="card">
+    <h2>Test note</h2>
+    <div class="row">
+      <span class="label">MIDI note</span>
+      <input type="number" id="test-note" value="60" min="0" max="127">
+      <span class="value" id="test-name">C4</span>
+    </div>
+    <div class="row">
+      <span class="label">Velocity</span>
+      <input type="number" id="test-vel" value="100" min="1" max="127">
+    </div>
+    <div class="btn-row">
+      <button id="test-fire">Fire</button>
+      <button class="ghost" id="test-off">Release</button>
+    </div>
+    <div class="hint">Routes through the same dispatch path as Synthesia NoteOn/Off, so every PWM tunable applies.</div>
+  </div>
+
+  <!-- Strike tester — dial in force vs duration on ONE key -->
+  <div class="card">
+    <h2>Strike tester <small style="text-transform:none;letter-spacing:0">(force × duration)</small></h2>
+    <div class="row">
+      <span class="label">Key</span>
+      <button class="ghost" id="strike-prev">−</button>
+      <span class="value" id="strike-name" style="flex:1;text-align:center;font-size:15px;">C4 (60)</span>
+      <button class="ghost" id="strike-next">+</button>
+    </div>
+    <label class="full">
+      <div class="label-line"><span class="name">Force <small>(raw PWM — how hard/fast it presses)</small></span>
+        <span class="value" id="strike-force-val">3000</span></div>
+      <input type="range" id="strike-force" min="0" max="4096" value="3000">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Duration <small>(how long held down)</small></span>
+        <span class="value" id="strike-dur-val">120 ms</span></div>
+      <input type="range" id="strike-dur" min="10" max="800" value="120">
+    </label>
+    <div class="btn-row">
+      <button id="strike-fire">Strike</button>
+      <button class="ghost" id="strike-hold">Hold</button>
+      <button class="ghost" id="strike-release">Release</button>
+    </div>
+    <div class="hint">Bypasses the velocity curve — drives the raw force directly so you can feel exactly what each PWM level does, then set min/max to match. 4096 = full power. Watchdog still force-releases after the Hold timeout.</div>
+  </div>
+
+  <!-- MIDI file player — plays AI-generated songs on the piano -->
+  <div class="card">
+    <h2>MIDI player <small style="text-transform:none;letter-spacing:0">(AI songs → piano)</small></h2>
+    <div id="midi-drop" style="border:2px dashed var(--border); border-radius:10px;
+         padding:18px; text-align:center; color:var(--muted); cursor:pointer;">
+      Drop a <b>.mid</b> file here or click to choose<br>
+      <small>works with any AI that exports MIDI (Suno, Udio, GPT-written files…)</small>
+      <input type="file" id="midi-file" accept=".mid,.midi" style="display:none">
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <span class="label" id="midi-name">no file loaded</span>
+      <span class="value" id="midi-time">--:-- / --:--</span>
+    </div>
+    <label class="full">
+      <div class="label-line"><span class="name">Progress</span></div>
+      <input type="range" id="midi-progress" min="0" max="1000" value="0" disabled>
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Speed</span>
+        <span class="value" id="midi-speed-val">1.00×</span></div>
+      <input type="range" id="midi-speed" min="50" max="150" value="100">
+    </label>
+    <div class="btn-row">
+      <button id="midi-play" disabled>▶ Play</button>
+      <button class="ghost" id="midi-pause" disabled>⏸ Pause</button>
+      <button class="danger" id="midi-stop" disabled>⏹ Stop</button>
+    </div>
+    <div class="hint" id="midi-status">Notes outside the piano's C1–B7 range are folded into range by octave.</div>
+  </div>
+
+  <!-- Per-key force tuner -->
+  <div class="card">
+    <h2>Per-key force tuner</h2>
+    <div class="row">
+      <button class="ghost" id="key-prev">−</button>
+      <span class="value" id="key-name" style="flex:1; text-align:center; font-size:15px;">C4 (60)</span>
+      <button class="ghost" id="key-next">+</button>
+    </div>
+    <label class="full">
+      <div class="label-line"><span class="name">Force multiplier</span>
+        <span class="value" id="keyforce-val">1.00×</span></div>
+      <input type="range" id="keyforce" min="0" max="200" value="100">
+    </label>
+    <div class="btn-row">
+      <button id="key-test">Test this key</button>
+    </div>
+    <div class="hint" style="margin-top:14px;">
+      Apply the slider value above to a group of keys at once:
+    </div>
+    <div class="btn-row">
+      <button class="ghost" id="apply-all">All keys</button>
+      <button class="ghost" id="apply-white">All white</button>
+      <button class="ghost" id="apply-black">All black</button>
+      <button class="danger" id="apply-reset">Reset all → 1.0×</button>
+    </div>
+    <div class="keyboard" id="keyboard"></div>
+  </div>
+
+  <!-- Persistence -->
+  <div class="card">
+    <h2>Persistence</h2>
+    <div class="hint" style="margin-top:0; margin-bottom:12px;">
+      Settings auto-save every 30&nbsp;s. Use these for explicit control.
+    </div>
+    <div class="btn-row">
+      <button id="save-btn">Save now</button>
+      <button class="danger" id="reset-btn">Factory reset</button>
+    </div>
+  </div>
+</div>
+
+<!-- Serial log -->
+<div class="card" style="margin-top: 16px;">
+  <h2 style="display:flex; align-items:center; gap:8px;">
+    Serial log
+    <span style="flex:1"></span>
+    <button class="ghost" id="clear-log">Clear</button>
+  </h2>
+  <div id="log"></div>
+</div>
+
+<script>
+// ----------------------------------------------------------------------------
+// Web Serial wiring. Speaks the firmware's plain-text command protocol.
+// Each control sends a "<cmd> <value>\n" string; the firmware echoes back
+// confirmations which we display in the log.
+// ----------------------------------------------------------------------------
+
+const KEY_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const fmtNote = (n) => `${KEY_NAMES[n%12]}${Math.floor(n/12)-1}`;
+const $ = (id) => document.getElementById(id);
+
+let port = null, writer = null, reader = null, readerBuf = "";
+
+async function connect() {
+  if (port) return disconnect();
+  if (!("serial" in navigator)) {
+    log("Web Serial API not supported. Use Chrome or Edge.");
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    reader = port.readable.getReader();
+    $("status-pill").textContent = "Connected";
+    $("status-pill").classList.add("connected");
+    $("connect-btn").textContent = "Disconnect";
+    $("status-btn").disabled = false;
+    readLoop();
+    // Wait a moment then ask for current state so sliders sync to firmware
+    setTimeout(() => sendCmd("status"), 250);
+  } catch (e) {
+    log("Connect error: " + e.message);
+    port = null;
+  }
+}
+
+async function disconnect() {
+  try {
+    if (reader) { try { await reader.cancel(); } catch {} reader.releaseLock(); reader = null; }
+    if (writer) { writer.releaseLock(); writer = null; }
+    if (port)   { await port.close(); port = null; }
+  } catch (e) { log("Disconnect error: " + e.message); }
+  $("status-pill").textContent = "Disconnected";
+  $("status-pill").classList.remove("connected");
+  $("connect-btn").textContent = "Connect";
+  $("status-btn").disabled = true;
+}
+
+async function readLoop() {
+  const decoder = new TextDecoder();
+  while (port && reader) {
+    try {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value);
+      readerBuf += text;
+      let nl;
+      while ((nl = readerBuf.indexOf("\n")) !== -1) {
+        const line = readerBuf.slice(0, nl).replace("\r", "");
+        readerBuf = readerBuf.slice(nl + 1);
+        log(line);
+        parseStatus(line);
+      }
+    } catch (e) {
+      log("Read error: " + e.message);
+      break;
+    }
+  }
+}
+
+async function sendCmd(cmd) {
+  if (!writer) { log("(not connected — would send: " + cmd + ")"); return; }
+  try {
+    await writer.write(new TextEncoder().encode(cmd + "\n"));
+    log("> " + cmd, "out");
+  } catch (e) {
+    log("Send error: " + e.message);
+  }
+}
+
+// Parse boot-time status output to sync sliders to firmware values.
+// Looks for:
+//   "PWM settings: sweep=2500  min=1500  max=4095  hold=5000 ms  velmult=1.00"
+//   "freq=1500 Hz   fullpower=OFF   gap=30 ms"
+function parseStatus(line) {
+  const m1 = line.match(/sweep=(\d+)\s+min=(\d+)\s+max=(\d+)\s+hold=(\d+)\s*ms\s+velmult=([\d.]+)/);
+  if (m1) {
+    setSlider("pwm", +m1[1]);
+    setSlider("min", +m1[2]);
+    setSlider("max", +m1[3]);
+    setSlider("hold", +m1[4]);
+    setSlider("velmult", Math.round(parseFloat(m1[5])*100));
+  }
+  const m2 = line.match(/freq=(\d+)\s*Hz\s+fullpower=(ON|OFF)\s+gap=(\d+)\s*ms(?:\s+minstrike=(\d+)\s*ms)?/);
+  if (m2) {
+    setSlider("freq", +m2[1]);
+    setSwitch("fullpower", m2[2] === "ON");
+    setSlider("gap", +m2[3]);
+    if (m2[4]) setSlider("minstrike", +m2[4]);
+  }
+  // "softrelease=ON  releasepwm=1100  releasems=22 ms"
+  const m3 = line.match(/softrelease=(ON|OFF)\s+releasepwm=(\d+)\s+releasems=(\d+)/);
+  if (m3) {
+    setSwitch("softrelease", m3[1] === "ON");
+    setSlider("releasepwm", +m3[2]);
+    setSlider("releasems", +m3[3]);
+  }
+  // "restrike=120 ms (...)"
+  const m4 = line.match(/restrike=(\d+)\s*ms/);
+  if (m4) setSlider("restrike", +m4[1]);
+}
+
+function setSlider(id, value) {
+  const el = $(id);
+  if (!el) return;
+  el.value = value;
+  el.dispatchEvent(new Event("input"));
+}
+
+function setSwitch(id, on) {
+  const el = $(id);
+  if (!el) return;
+  if (on) el.classList.add("on"); else el.classList.remove("on");
+}
+
+function log(msg, cls) {
+  const el = $("log");
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = msg;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+  while (el.childElementCount > 500) el.removeChild(el.firstChild);
+}
+
+// --- Wire up sliders ---------------------------------------------------------
+
+// label formatters: id -> (value) => string
+const fmtLabel = {
+  min:        v => v,
+  max:        v => v,
+  pwm:        v => v,
+  hold:       v => v + " ms",
+  gap:        v => v + " ms",
+  minstrike:  v => v + " ms",
+  restrike:   v => (v < 40 ? "off" : v + " ms"),
+  releasepwm: v => v,
+  releasems:  v => v + " ms",
+  freq:       v => v + " Hz",
+  velmult:    v => (v/100).toFixed(2) + "×",
+  keyforce:   v => (v/100).toFixed(2) + "×",
+};
+
+// id -> serial command builder
+const cmdFor = {
+  min:        v => `min ${v}`,
+  max:        v => `max ${v}`,
+  pwm:        v => `pwm ${v}`,
+  hold:       v => `hold ${v}`,
+  gap:        v => `gap ${v}`,
+  minstrike:  v => `minstrike ${v}`,
+  restrike:   v => `restrike ${v < 40 ? 0 : v}`,   // firmware wants 0 or 40..1000
+  releasepwm: v => `releasepwm ${v}`,
+  releasems:  v => `releasems ${v}`,
+  freq:       v => `freq ${v}`,
+  velmult:    v => `velmult ${(v/100).toFixed(2)}`,
+};
+
+for (const id of Object.keys(cmdFor)) {
+  const sl = $(id);
+  sl.addEventListener("input", () => {
+    $(id + "-val").textContent = fmtLabel[id](+sl.value);
+  });
+  sl.addEventListener("change", () => sendCmd(cmdFor[id](+sl.value)));
+}
+
+// fullpower toggle
+$("fullpower").addEventListener("click", () => {
+  const sw = $("fullpower");
+  sw.classList.toggle("on");
+  sendCmd("fullpower " + (sw.classList.contains("on") ? "1" : "0"));
+});
+
+// keyviz toggle
+$("keyviz").addEventListener("click", () => {
+  const sw = $("keyviz");
+  sw.classList.toggle("on");
+  sendCmd("keyviz " + (sw.classList.contains("on") ? "1" : "0"));
+});
+
+// soft-release (anti-clank) toggle
+$("softrelease").addEventListener("click", () => {
+  const sw = $("softrelease");
+  sw.classList.toggle("on");
+  sendCmd("softrelease " + (sw.classList.contains("on") ? "1" : "0"));
+});
+
+// --- Action buttons ----------------------------------------------------------
+
+$("connect-btn").addEventListener("click", connect);
+$("status-btn").addEventListener("click",  () => sendCmd("status"));
+$("save-btn").addEventListener("click",    () => sendCmd("save"));
+$("reset-btn").addEventListener("click",   () => {
+  if (confirm("Wipe all saved settings? You'll need to reboot to load defaults.")) {
+    sendCmd("reset");
+  }
+});
+$("off-btn").addEventListener("click",       () => sendCmd("off"));
+$("broadcast-btn").addEventListener("click", () => sendCmd("broadcast"));
+$("panic-btn").addEventListener("click", () => {
+  sendCmd("panic");
+  // Also force-sync the Full Power switch in the UI since panic flips
+  // the global on the firmware side.
+  setSwitch("fullpower", true);
+});
+$("sweep-btn").addEventListener("click",     () => sendCmd("sweep"));
+$("clear-log").addEventListener("click",     () => { $("log").innerHTML = ""; });
+
+// --- Test note ---------------------------------------------------------------
+
+const testNoteEl = $("test-note");
+const testNameEl = $("test-name");
+testNoteEl.addEventListener("input", () => {
+  const n = +testNoteEl.value;
+  testNameEl.textContent = (n >= 0 && n <= 127) ? fmtNote(n) : "—";
+});
+// "Fire" does a brief strike (220 ms then release) so single-click testing
+// behaves like pressing a real piano key. The separate "Release" still
+// works for cases where you held with Fire externally.
+$("test-fire").addEventListener("click", () => {
+  const n = +testNoteEl.value, v = +$("test-vel").value;
+  sendCmd(`note ${n} ${v}`);
+  setTimeout(() => sendCmd(`note ${n} 0`), 220);
+});
+$("test-off").addEventListener("click", () => {
+  sendCmd(`note ${+testNoteEl.value} 0`);
+});
+
+// --- Strike tester ----------------------------------------------------------
+let strikeKey = 60;
+function refreshStrike() {
+  $("strike-name").textContent = `${fmtNote(strikeKey)} (${strikeKey})`;
+}
+$("strike-prev").addEventListener("click", () => { if (strikeKey > 24) { strikeKey--; refreshStrike(); } });
+$("strike-next").addEventListener("click", () => { if (strikeKey < 107) { strikeKey++; refreshStrike(); } });
+$("strike-force").addEventListener("input", () => {
+  $("strike-force-val").textContent = $("strike-force").value;
+});
+$("strike-dur").addEventListener("input", () => {
+  $("strike-dur-val").textContent = $("strike-dur").value + " ms";
+});
+$("strike-fire").addEventListener("click", () => {
+  const pwm = +$("strike-force").value, dur = +$("strike-dur").value;
+  sendCmd(`rawnote ${strikeKey} ${pwm}`);
+  setTimeout(() => sendCmd(`rawnote ${strikeKey} 0`), dur);
+});
+$("strike-hold").addEventListener("click", () => {
+  sendCmd(`rawnote ${strikeKey} ${+$("strike-force").value}`);
+});
+$("strike-release").addEventListener("click", () => {
+  sendCmd(`rawnote ${strikeKey} 0`);
+});
+refreshStrike();
+
+// --- MIDI file player --------------------------------------------------------
+// Parses a Standard MIDI File (format 0/1) in the browser and streams the
+// note events to the firmware over the existing serial connection using the
+// same `note <n> <v>` command as the Test card — so every solenoid tunable
+// (velocity map, gap, minstrike, soft release, per-key force) applies.
+
+const NOTE_LO = 24, NOTE_HI = 107;   // piano's physical range (C1..B7)
+
+function parseMidi(buf) {
+  const d = new DataView(buf); let p = 0;
+  const u32 = () => { const v = d.getUint32(p); p += 4; return v; };
+  const u16 = () => { const v = d.getUint16(p); p += 2; return v; };
+  const u8  = () => d.getUint8(p++);
+  const varlen = () => { let v = 0, b; do { b = u8(); v = (v << 7) | (b & 0x7F); } while (b & 0x80); return v; };
+
+  if (u32() !== 0x4D546864) throw new Error("not a MIDI file (missing MThd)");
+  const hlen = u32(), fmt = u16(), ntrk = u16(), div = u16();
+  if (div & 0x8000) throw new Error("SMPTE-timed MIDI not supported");
+  p += hlen - 6;
+
+  const raw = [];   // {tick, tempo?} | {tick, on, note, vel}
+  for (let t = 0; t < ntrk; t++) {
+    if (u32() !== 0x4D54726B) throw new Error("bad track header");
+    const end = p + u32();
+    let tick = 0, status = 0;
+    while (p < end) {
+      tick += varlen();
+      let s = u8();
+      if (s < 0x80) { p--; s = status; } else status = s;
+      const type = s & 0xF0;
+      if (s === 0xFF) {                       // meta (cancels running status)
+        status = 0;
+        const meta = u8(), ml = varlen();
+        if (meta === 0x51 && ml === 3) {
+          raw.push({ tick, tempo: (u8() << 16) | (u8() << 8) | u8() });
+        } else p += ml;
+      } else if (s === 0xF0 || s === 0xF7) {  // sysex (cancels running status)
+        status = 0;
+        p += varlen();
+      } else if (type === 0x90) {
+        const n = u8(), v = u8();
+        raw.push({ tick, on: v > 0, note: n, vel: v });
+      } else if (type === 0x80) {
+        const n = u8(); u8();
+        raw.push({ tick, on: false, note: n, vel: 0 });
+      } else if (type === 0xC0 || type === 0xD0) {
+        p += 1;                               // program change / channel pressure
+      } else {
+        p += 2;                               // CC, pitch bend, aftertouch
+      }
+    }
+  }
+
+  // Merge tracks, convert ticks → ms via the tempo map (default 120 BPM).
+  raw.sort((a, b) => a.tick - b.tick);
+  let usPerQ = 500000, lastTick = 0, lastMs = 0;
+  const events = [];
+  for (const e of raw) {
+    const ms = lastMs + (e.tick - lastTick) * (usPerQ / 1000) / div;
+    lastTick = e.tick; lastMs = ms;
+    if (e.tempo) usPerQ = e.tempo;
+    else events.push({ t: ms, on: e.on, note: e.note, vel: e.vel });
+  }
+  return { events, duration: lastMs };
+}
+
+// Fold out-of-range notes into C1..B7 by octaves so bass/treble extremes
+// still play musically instead of being dropped.
+function foldNote(n) {
+  while (n < NOTE_LO) n += 12;
+  while (n > NOTE_HI) n -= 12;
+  return n;
+}
+
+let midiSong = null, midiTimer = null, midiIdx = 0;
+let midiElapsed = 0, midiLastWall = 0, midiPlaying = false;
+
+const fmtTime = ms => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+function midiUpdateUi() {
+  if (!midiSong) return;
+  $("midi-time").textContent = `${fmtTime(midiElapsed)} / ${fmtTime(midiSong.duration)}`;
+  $("midi-progress").value = midiSong.duration
+    ? Math.round(1000 * midiElapsed / midiSong.duration) : 0;
+}
+
+function midiTick() {
+  if (!midiPlaying || !midiSong) return;
+  const now = performance.now();
+  const speed = (+$("midi-speed").value) / 100;
+  midiElapsed += (now - midiLastWall) * speed;
+  midiLastWall = now;
+
+  while (midiIdx < midiSong.events.length && midiSong.events[midiIdx].t <= midiElapsed) {
+    const e = midiSong.events[midiIdx++];
+    const n = foldNote(e.note);
+    sendCmd(`note ${n} ${e.on ? Math.max(1, e.vel) : 0}`);
+  }
+  midiUpdateUi();
+
+  if (midiIdx >= midiSong.events.length) {
+    midiStop(true);
+    $("midi-status").textContent = "Song finished.";
+    return;
+  }
+  midiTimer = setTimeout(midiTick, 10);
+}
+
+function midiPlay() {
+  if (!midiSong) return;
+  if (midiIdx >= midiSong.events.length) { midiIdx = 0; midiElapsed = 0; }
+  midiPlaying = true;
+  midiLastWall = performance.now();
+  $("midi-play").disabled = true;
+  $("midi-pause").disabled = false;
+  $("midi-stop").disabled = false;
+  $("midi-status").textContent = "Playing…";
+  midiTick();
+}
+
+function midiPause() {
+  midiPlaying = false;
+  if (midiTimer) { clearTimeout(midiTimer); midiTimer = null; }
+  sendCmd("off");   // never leave keys held while paused
+  $("midi-play").disabled = false;
+  $("midi-pause").disabled = true;
+  $("midi-status").textContent = "Paused (all keys released).";
+}
+
+function midiStop(finished) {
+  midiPlaying = false;
+  if (midiTimer) { clearTimeout(midiTimer); midiTimer = null; }
+  midiIdx = 0; midiElapsed = 0;
+  sendCmd("off");   // release everything — safety on stop
+  midiUpdateUi();
+  $("midi-play").disabled = false;
+  $("midi-pause").disabled = true;
+  $("midi-stop").disabled = true;
+  if (!finished) $("midi-status").textContent = "Stopped (all keys released).";
+}
+
+async function midiLoadFile(file) {
+  try {
+    const buf = await file.arrayBuffer();
+    midiStop(false);
+    midiSong = parseMidi(buf);
+    const notes = midiSong.events.filter(e => e.on).length;
+    $("midi-name").textContent = file.name;
+    $("midi-status").textContent =
+      `Loaded: ${notes} notes, ${fmtTime(midiSong.duration)}. Ready to play.`;
+    $("midi-play").disabled = false;
+    midiUpdateUi();
+  } catch (err) {
+    midiSong = null;
+    $("midi-name").textContent = "no file loaded";
+    $("midi-status").textContent = "Could not read file: " + err.message;
+    $("midi-play").disabled = true;
+  }
+}
+
+$("midi-drop").addEventListener("click", () => $("midi-file").click());
+$("midi-file").addEventListener("change", e => {
+  if (e.target.files[0]) midiLoadFile(e.target.files[0]);
+});
+$("midi-drop").addEventListener("dragover", e => {
+  e.preventDefault();
+  $("midi-drop").style.borderColor = "var(--accent)";
+});
+$("midi-drop").addEventListener("dragleave", () => {
+  $("midi-drop").style.borderColor = "var(--border)";
+});
+$("midi-drop").addEventListener("drop", e => {
+  e.preventDefault();
+  $("midi-drop").style.borderColor = "var(--border)";
+  if (e.dataTransfer.files[0]) midiLoadFile(e.dataTransfer.files[0]);
+});
+$("midi-play").addEventListener("click", midiPlay);
+$("midi-pause").addEventListener("click", midiPause);
+$("midi-stop").addEventListener("click", () => midiStop(false));
+$("midi-speed").addEventListener("input", () => {
+  $("midi-speed-val").textContent = ((+$("midi-speed").value) / 100).toFixed(2) + "×";
+});
+
+// --- Per-key force tuner -----------------------------------------------------
+
+let selectedKey = 60;
+function refreshKey() {
+  $("key-name").textContent = `${fmtNote(selectedKey)} (${selectedKey})`;
+  // We don't have a "get keyforce" command yet; the slider just shows the
+  // user's last-set value. Future enhancement: query firmware for current.
+  document.querySelectorAll("#keyboard .key").forEach(k => {
+    k.classList.toggle("selected", +k.dataset.note === selectedKey);
+  });
+}
+$("key-prev").addEventListener("click", () => {
+  if (selectedKey > 21) { selectedKey--; refreshKey(); }
+});
+$("key-next").addEventListener("click", () => {
+  if (selectedKey < 108) { selectedKey++; refreshKey(); }
+});
+$("keyforce").addEventListener("input", () => {
+  $("keyforce-val").textContent = ($("keyforce").value/100).toFixed(2) + "×";
+});
+$("keyforce").addEventListener("change", () => {
+  const mult = ($("keyforce").value / 100).toFixed(2);
+  sendCmd(`keyforce ${selectedKey} ${mult}`);
+});
+$("key-test").addEventListener("click", () => {
+  sendCmd(`note ${selectedKey} 100`);
+  setTimeout(() => sendCmd(`note ${selectedKey} 0`), 220);
+});
+
+// Group apply — use the current value of the per-key Force slider.
+function applyGroup(cmdPrefix) {
+  const mult = ($("keyforce").value / 100).toFixed(2);
+  sendCmd(`${cmdPrefix} ${mult}`);
+}
+$("apply-all").addEventListener("click",   () => applyGroup("keyforce_all"));
+$("apply-white").addEventListener("click", () => applyGroup("keyforce_white"));
+$("apply-black").addEventListener("click", () => applyGroup("keyforce_black"));
+$("apply-reset").addEventListener("click", () => {
+  if (confirm("Reset every key's force multiplier to 1.00×?")) {
+    sendCmd("keyforce_all 1.0");
+    $("keyforce").value = 100;
+    $("keyforce-val").textContent = "1.00×";
+  }
+});
+
+// Build a mini piano keyboard (A0..C8) with click-to-select
+(function buildKeyboard() {
+  const kb = $("keyboard");
+  const minNote = 21, maxNote = 108;
+  const whites = [], blacks = [];
+  for (let n = minNote; n <= maxNote; n++) {
+    const isBlack = [1,3,6,8,10].includes(n % 12);
+    const k = document.createElement("div");
+    k.className = "key " + (isBlack ? "black" : "white");
+    k.dataset.note = n;
+    k.textContent = (n % 12 === 0) ? `C${Math.floor(n/12)-1}` : "";
+    k.addEventListener("click", () => { selectedKey = n; refreshKey(); });
+    if (isBlack) blacks.push(k); else whites.push(k);
+  }
+  // Render whites first, then absolutely-positioned blacks via negative margin
+  // (CSS already handles overlap). Just interleave by note order:
+  for (let n = minNote; n <= maxNote; n++) {
+    const isBlack = [1,3,6,8,10].includes(n % 12);
+    kb.appendChild(isBlack ? blacks.shift() : whites.shift());
+  }
+  refreshKey();
+})();
+
+</script>
+</body>
+</html>

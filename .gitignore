@@ -1,0 +1,5 @@
+.pio/
+.vscode/
+.claude/
+.DS_Store
+*.code-workspace
