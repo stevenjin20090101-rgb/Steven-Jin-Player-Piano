@@ -1,0 +1,21 @@
+Player Piano — ESP32-S3 self-playing acoustic piano
+====================================================
+
+Original author, designer, and creator
+--------------------------------------
+Steven Jin  <stevenjin20090101@gmail.com>
+  - Firmware (dispatch, fire-safety, LED engine, UI, settings)
+  - Web control GUI + MIDI player
+  - System integration and physical installation
+
+Hardware collaboration
+-----------------------
+Power-board electronics (PCA9685 solenoid drivers, opto-isolated I²C trunk)
+were designed with a hardware collaborator. All firmware and software is the
+work of Steven Jin.
+
+Authorship verification
+-----------------------
+This project carries an Ed25519 cryptographic authorship signature.
+See PROVENANCE.md to verify that Steven Jin authored these exact files.
+Public-key fingerprint: eab16a502f679465

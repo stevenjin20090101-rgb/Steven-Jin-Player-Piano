@@ -1,3 +1,11 @@
+// ============================================================================
+//  Player Piano - ESP32-S3 self-playing acoustic piano
+//  Copyright (c) 2026 Steven Jin <stevenjin20090101@gmail.com>
+//  Original author & creator: Steven Jin.
+//  Licensed under the MIT License (see LICENSE). This copyright and attribution
+//  notice MUST be preserved in all copies or substantial portions of the work.
+//  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
+// ============================================================================
 #include "settings.h"
 #include "config.h"
 #include "power_boards.h"
@@ -33,6 +41,8 @@ void settings_load() {
     g_pwmFreqHz      = p.getUShort("pwmFreq",   DEFAULT_PWM_FREQ_HZ);
     g_minRetriggerGapMs = p.getUInt("retGapMs", DEFAULT_MIN_RETRIGGER_GAP_MS);
     g_minStrikeMs       = p.getUInt("minStrike", DEFAULT_MIN_STRIKE_MS);
+    g_isoStrikeMs       = p.getUInt("isoStrike", DEFAULT_ISO_STRIKE_MS);
+    g_isoGapMs          = p.getUInt("isoGap",    DEFAULT_ISO_GAP_MS);
     g_waterfallEnabled  = p.getBool("waterfall", DEFAULT_WATERFALL_ENABLED != 0);
     g_keyboardVizEnabled = p.getBool("keyviz", true);
     g_softRelease       = p.getBool("softRel",  DEFAULT_SOFT_RELEASE != 0);
@@ -41,6 +51,15 @@ void settings_load() {
     g_ledsEnabled       = p.getBool("leds",     DEFAULT_LEDS_ENABLED != 0);
     g_restrikeMs        = p.getUInt("restrike", DEFAULT_RESTRIKE_MS);
     g_idleDimSecs       = p.getUInt("dimSecs",  DEFAULT_IDLE_DIM_SECS);
+
+    appState.ledCount           = p.getUShort("ledCount",  DEFAULT_LED_ACTIVE);
+    appState.ledOffset          = p.getShort ("ledOffset", DEFAULT_LED_OFFSET);
+    appState.ledScalePct        = p.getUShort("ledScale",  DEFAULT_LED_SCALE_PCT);
+    appState.ledTail            = p.getUChar ("ledTail",   DEFAULT_LED_TAIL);
+    appState.ledReverse         = p.getBool  ("ledRev",    DEFAULT_LED_REVERSE != 0);
+    appState.ledReactivePalette = p.getUChar ("reactPal",  DEFAULT_REACT_PALETTE);
+    appState.ledGlow            = p.getUChar ("ledGlow",   DEFAULT_LED_GLOW);
+    appState.ledVelBright       = p.getBool  ("ledVelBri", DEFAULT_LED_VELBRIGHT != 0);
 
     appState.screenBrightness = p.getUChar("scrBri",  180);
     appState.ledBrightness    = p.getUChar("ledBri",  LED_DEFAULT_BRIGHTNESS);
@@ -80,6 +99,8 @@ void settings_save() {
     p.putUShort("pwmFreq",   g_pwmFreqHz);
     p.putUInt  ("retGapMs",  g_minRetriggerGapMs);
     p.putUInt  ("minStrike", g_minStrikeMs);
+    p.putUInt  ("isoStrike", g_isoStrikeMs);
+    p.putUInt  ("isoGap",    g_isoGapMs);
     p.putBool  ("waterfall", g_waterfallEnabled);
     p.putBool  ("keyviz",    g_keyboardVizEnabled);
     p.putBool  ("softRel",   g_softRelease);
@@ -88,6 +109,15 @@ void settings_save() {
     p.putBool  ("leds",      g_ledsEnabled);
     p.putUInt  ("restrike",  g_restrikeMs);
     p.putUInt  ("dimSecs",   g_idleDimSecs);
+
+    p.putUShort("ledCount",  appState.ledCount);
+    p.putShort ("ledOffset", appState.ledOffset);
+    p.putUShort("ledScale",  appState.ledScalePct);
+    p.putUChar ("ledTail",   appState.ledTail);
+    p.putBool  ("ledRev",    appState.ledReverse);
+    p.putUChar ("reactPal",  appState.ledReactivePalette);
+    p.putUChar ("ledGlow",   appState.ledGlow);
+    p.putBool  ("ledVelBri", appState.ledVelBright);
 
     p.putUChar("scrBri",  appState.screenBrightness);
     p.putUChar("ledBri",  appState.ledBrightness);
@@ -114,11 +144,12 @@ void settings_save() {
 // It also avoids the rare multi-10ms flash-compaction stall mid-song.)
 struct SettingsSnap {
     uint32_t sweepPWM, minPWM, maxPWM, holdMs, retGapMs, minStrike, relMs,
-             restrike, dimSecs, ledColor;
-    uint16_t pwmFreq, relPwm;
+             restrike, dimSecs, ledColor, isoStrike, isoGap;
+    uint16_t pwmFreq, relPwm, ledCount, ledScale;
+    int16_t  ledOffset;
     float    velmult;
-    bool     fullpower, waterfall, keyviz, softRel, leds;
-    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel;
+    bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri;
+    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail;
     float    keyForce[128];
 };
 static SettingsSnap s_snap;
@@ -129,6 +160,7 @@ static void takeSnap(SettingsSnap &s) {
     s.sweepPWM = g_sweepStrikePWM; s.minPWM = g_minStrikePWM;
     s.maxPWM = g_maxStrikePWM;     s.holdMs = g_maxHoldMs;
     s.retGapMs = g_minRetriggerGapMs; s.minStrike = g_minStrikeMs;
+    s.isoStrike = g_isoStrikeMs; s.isoGap = g_isoGapMs;
     s.relMs = g_releaseMs;         s.restrike = g_restrikeMs;
     s.dimSecs = g_idleDimSecs;     s.ledColor = appState.ledStaticColor;
     s.pwmFreq = g_pwmFreqHz;       s.relPwm = g_releasePwm;
@@ -140,6 +172,11 @@ static void takeSnap(SettingsSnap &s) {
     s.ledMode = (uint8_t)appState.ledMode; s.rainSpd = appState.rainbowSpeed;
     s.decay = appState.noteDecayRate; s.inMode = (uint8_t)appState.inputMode;
     s.touchVel = appState.touchVelocity;
+    s.ledCount = appState.ledCount; s.ledOffset = appState.ledOffset;
+    s.ledScale = appState.ledScalePct;
+    s.ledReverse = appState.ledReverse; s.reactPal = appState.ledReactivePalette;
+    s.ledGlow = appState.ledGlow; s.ledVelBri = appState.ledVelBright;
+    s.ledTail = appState.ledTail;
     memcpy(s.keyForce, g_keyForceMult, sizeof(s.keyForce));
 }
 

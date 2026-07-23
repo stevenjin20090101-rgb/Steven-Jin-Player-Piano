@@ -1,3 +1,11 @@
+// ============================================================================
+//  Player Piano - ESP32-S3 self-playing acoustic piano
+//  Copyright (c) 2026 Steven Jin <stevenjin20090101@gmail.com>
+//  Original author & creator: Steven Jin.
+//  Licensed under the MIT License (see LICENSE). This copyright and attribution
+//  notice MUST be preserved in all copies or substantial portions of the work.
+//  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
+// ============================================================================
 #include "power_boards.h"
 #include "config.h"
 #include <esp_task_wdt.h>
@@ -84,6 +92,7 @@ static uint8_t s_offFailStreak = 0;
 struct KeyTiming {
     uint32_t lastOffMs;
     uint32_t onAtMs;          // millis() when this note's last NoteOn fired
+    uint32_t effMinStrikeMs;  // min-strike chosen for THIS note (isolated → longer)
     uint32_t pendingFireMs;
     uint32_t pendingReleaseMs;
     uint32_t cushionOffMs;    // if non-zero: soft-release cushion active, cut to 0 at this time
@@ -99,6 +108,11 @@ static KeyTiming s_keyTiming[128] = {};
 
 uint32_t g_minRetriggerGapMs = DEFAULT_MIN_RETRIGGER_GAP_MS;
 uint32_t g_minStrikeMs       = DEFAULT_MIN_STRIKE_MS;
+uint32_t g_isoStrikeMs       = DEFAULT_ISO_STRIKE_MS;
+uint32_t g_isoGapMs          = DEFAULT_ISO_GAP_MS;
+// millis() of the last actual strike on ANY key — the density gauge used to
+// tell an isolated staccato note (long gap since this) from one inside a run.
+static uint32_t s_lastFireMs = 0;
 
 // Auto re-strike: while a note is held, re-hit it every g_restrikeMs so
 // long/sustained notes stay audible instead of striking once and decaying.
@@ -233,7 +247,19 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
     if (midi_note < 128) {
         s_keyTiming[midi_note].onAtMs = now;       // for minStrike
         s_keyTiming[midi_note].cushionOffMs = 0;   // supersede any in-flight cushion
+        // Pick this note's minimum strike duration NOW, from how long it's been
+        // since the last strike on any key. A lone note after silence gets the
+        // longer isolated minimum so it's audible; a note inside a run keeps the
+        // short one so fast passages stay fast. Decided at attack (we can only
+        // see the past), then honored by the deferred-release logic below.
+        bool isolated = (s_lastFireMs == 0) || (now - s_lastFireMs > g_isoGapMs);
+        uint32_t eff = g_minStrikeMs;
+        if (isolated && g_isoGapMs > 0 && g_isoStrikeMs > g_minStrikeMs) {
+            eff = g_isoStrikeMs;
+        }
+        s_keyTiming[midi_note].effMinStrikeMs = eff;
     }
+    s_lastFireMs = now;                            // update the density gauge
 #if DEBUG_DISPATCH
     Serial.printf("[disp] NoteOn  note=%u v=%u → board %d (0x%02X) ch=%u pwm=%u\n",
                   midi_note, velocity, idx, b.chip.address(), channel, pwm);
@@ -357,13 +383,38 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
     }
     if (g_minRetriggerGapMs > 0 && midi_note < 128) {
         uint32_t now = millis();
-        uint32_t lastOff = s_keyTiming[midi_note].lastOffMs;
+        KeyTiming &rt = s_keyTiming[midi_note];
+
+        // Rapid repeat WHILE a soft-release cushion is still holding the
+        // plunger partway down (cushionOffMs in flight): the key hasn't
+        // physically reset. Cut the cushion to 0 NOW so the plunger lifts,
+        // and space the re-strike by the full gap from this instant. Without
+        // this the cushion (g_releaseMs) can outlast the retrigger gap, so the
+        // deferred strike fires onto a still-depressed key and the repeat
+        // never articulates — the "repeats don't work with soft-release on"
+        // bug. (The gap alone couldn't fix it: it was measured from the
+        // cushion START, but the plunger only frees at the cushion END.)
+        if (rt.cushionOffMs != 0) {
+            hardOffNow(midi_note);                 // clears cushionOffMs + s_onAt
+            rt.pendingFireMs    = now + g_minRetriggerGapMs;
+            rt.pendingVelocity  = velocity;
+            rt.pendingReleaseMs = 0;
+#if DEBUG_DISPATCH
+            Serial.printf("[disp] note=%u retrigger during cushion → cut + defer %lu ms\n",
+                          midi_note, (unsigned long)g_minRetriggerGapMs);
+#endif
+            return true;
+        }
+
+        // Normal retrigger gap, measured from the last full (cushion-free)
+        // release so the plunger has time to reset between strikes.
+        uint32_t lastOff = rt.lastOffMs;
         if (lastOff > 0) {
             uint32_t elapsed = now - lastOff;
             if (elapsed < g_minRetriggerGapMs) {
-                s_keyTiming[midi_note].pendingFireMs    = lastOff + g_minRetriggerGapMs;
-                s_keyTiming[midi_note].pendingVelocity  = velocity;
-                s_keyTiming[midi_note].pendingReleaseMs = 0;  // unscheduled until NoteOff
+                rt.pendingFireMs    = lastOff + g_minRetriggerGapMs;
+                rt.pendingVelocity  = velocity;
+                rt.pendingReleaseMs = 0;  // unscheduled until NoteOff
 #if DEBUG_DISPATCH
                 Serial.printf("[disp] note=%u deferred by %lu ms (gap=%lu)\n",
                               midi_note,
@@ -406,20 +457,23 @@ bool dispatchNoteOff(uint8_t midi_note) {
         }
 
         // Case 2: note is currently held. Has it been held long enough?
-        // If MIDI sent a very short note (< g_minStrikeMs), the solenoid
-        // hasn't had time to fully strike. Defer the release until the
-        // minimum strike duration elapses.
-        if (g_minStrikeMs > 0 && s_keyTiming[midi_note].onAtMs > 0) {
+        // If MIDI sent a very short note, the solenoid hasn't had time to fully
+        // strike. Defer the release until this note's own minimum-strike window
+        // elapses — which is the LONGER isolated value for a lone staccato note
+        // and the shorter one for a note inside a run (chosen at attack).
+        uint32_t eff = s_keyTiming[midi_note].effMinStrikeMs;
+        if (eff == 0) eff = g_minStrikeMs;   // notes struck before this feature existed
+        if (eff > 0 && s_keyTiming[midi_note].onAtMs > 0) {
             uint32_t held = now - s_keyTiming[midi_note].onAtMs;
-            if (held < g_minStrikeMs) {
+            if (held < eff) {
                 s_keyTiming[midi_note].pendingReleaseMs =
-                    s_keyTiming[midi_note].onAtMs + g_minStrikeMs;
+                    s_keyTiming[midi_note].onAtMs + eff;
                 // lastOffMs will be set when the deferred release actually
                 // runs (in tickPendingFires), so retrigger-gap is measured
                 // from the *real* release time, not the MIDI off time.
 #if DEBUG_DISPATCH
-                Serial.printf("[disp] noteOff %u deferred: held %lu ms < minStrike %lu\n",
-                              midi_note, (unsigned long)held, (unsigned long)g_minStrikeMs);
+                Serial.printf("[disp] noteOff %u deferred: held %lu ms < eff minStrike %lu\n",
+                              midi_note, (unsigned long)held, (unsigned long)eff);
 #endif
                 return true;
             }

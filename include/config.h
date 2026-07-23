@@ -1,3 +1,11 @@
+// ============================================================================
+//  Player Piano - ESP32-S3 self-playing acoustic piano
+//  Copyright (c) 2026 Steven Jin <stevenjin20090101@gmail.com>
+//  Original author & creator: Steven Jin.
+//  Licensed under the MIT License (see LICENSE). This copyright and attribution
+//  notice MUST be preserved in all copies or substantial portions of the work.
+//  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
+// ============================================================================
 #pragma once
 
 #include <Arduino.h>
@@ -46,8 +54,40 @@
 // Full-white worst case is 300 × 60 mA = 18 A — far beyond the 5 V rail —
 // so main.cpp caps total LED power via FastLED's power manager (3 A budget);
 // FastLED automatically dims frames that would exceed it.
-#define LED_COUNT        300
-#define LED_DEFAULT_BRIGHTNESS 80
+#define LED_COUNT        300     // max the firmware supports (array size)
+#define LED_DEFAULT_BRIGHTNESS 160
+
+// --- Physical strip / note→LED mapping (all runtime-tunable, persisted) -----
+// The strip actually installed is usually shorter than LED_COUNT. The played
+// key range (MIDI_NOTE_MIN..MAX) is mapped onto DEFAULT_LED_ACTIVE physical
+// LEDs. Offset shifts the whole mapping so the lit LED sits under the played
+// key; reverse flips it if the strip runs treble→bass.
+#define DEFAULT_LED_ACTIVE    73     // physical LEDs on the strip (<= LED_COUNT)
+#define DEFAULT_LED_OFFSET    0      // shift note→LED position (+/-), fine per-light
+#define DEFAULT_LED_REVERSE   0      // 1 = strip runs high-note → low-note
+// Scale (gain) on the note→LED spread, in percent. 100 = the full key range
+// fills the strip exactly. With fewer LEDs than keys the strip drifts ahead of
+// the keys as you go up; trimming the scale corrects that drift. Anchored at
+// the low end, so: set the LOW key with Offset, then the HIGH key with Scale.
+#define DEFAULT_LED_SCALE_PCT 100    // 10..400 %
+// LEDs at the far (high-note) end of the strip that sit past the last key with
+// a solenoid (e.g. the top keys have no drivers). These are excluded from the
+// note→LED mapping and kept dark, so lit LEDs == keys that can actually play.
+#define DEFAULT_LED_TAIL      0      // 0..LED_COUNT-1
+// Note-reactive colour palette: 0 pitch-rainbow, 1 solid(static colour),
+// 2 velocity heat, 3 fire, 4 ocean, 5 forest, 6 lava, 7 party.
+#define DEFAULT_REACT_PALETTE 0
+#define REACT_PALETTE_COUNT   8
+// Note-reactive feel: glow spreads each note across ±N neighbouring LEDs with
+// falloff (fuller look on a sparse strip); velocity-brightness scales a note's
+// brightness by how hard the key was hit.
+#define DEFAULT_LED_GLOW      1      // 0..10 neighbours each side
+#define DEFAULT_LED_VELBRIGHT 0      // 1 = brightness follows velocity
+
+// LED strip 5 V supply budget for FastLED's power manager. With a dedicated
+// 5 A+ supply, 73 LEDs at full white (~4 A) fit comfortably, so full
+// brightness is always available. Lower this if the strip shares the board 5 V.
+#define LED_MAX_MILLIAMPS     5000
 
 // Master LED enable. FastLED.show() for 300 LEDs is ~9 ms of tightly-timed
 // output PER FRAME that can stall the loop and starve the BLE stack during
@@ -171,6 +211,11 @@ extern uint32_t g_idleDimSecs;
 // faster than the plunger can move and produce no sound at all.
 // Set 0 to disable. Tune live via the "minstrike <ms>" serial command.
 #define DEFAULT_MIN_STRIKE_MS  60
+// Isolated-note strike boost: a lone short note (after > DEFAULT_ISO_GAP_MS of
+// silence) is stretched to at least DEFAULT_ISO_STRIKE_MS so it's clearly
+// audible; notes inside a run keep the shorter DEFAULT_MIN_STRIKE_MS.
+#define DEFAULT_ISO_STRIKE_MS  95
+#define DEFAULT_ISO_GAP_MS     180
 
 // --- Soft release / anti-clank ---------------------------------------------
 // On NoteOff, instead of cutting the coil to 0 instantly (the retract spring
@@ -238,6 +283,16 @@ struct AppState {
     uint32_t ledStaticColor;   // 0xRRGGBB
     uint8_t rainbowSpeed;      // 1..20  (hue increment per frame)
     uint8_t noteDecayRate;     // 1..20  (heat fade per frame in note-reactive)
+
+    // Physical strip layout + note-reactive palette (see DEFAULT_LED_* above)
+    uint16_t ledCount;          // physical LEDs on the strip (<= LED_COUNT)
+    int16_t  ledOffset;         // shift the note→LED mapping (+/-), fine per-light
+    uint16_t ledScalePct;       // note→LED spread gain, 10..400 % (drift trim)
+    uint8_t  ledTail;           // LEDs past the last solenoid key — kept dark
+    bool     ledReverse;        // strip runs high-note → low-note
+    uint8_t  ledReactivePalette;// 0..REACT_PALETTE_COUNT-1
+    uint8_t  ledGlow;           // 0..10 neighbours lit each side of a note
+    bool     ledVelBright;      // note brightness follows velocity
 
     InputMode inputMode;       // which sources are allowed to fire solenoids
     uint8_t   touchVelocity;   // 1..127, used when on-screen keys are tapped

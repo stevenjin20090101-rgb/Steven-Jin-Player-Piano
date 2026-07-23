@@ -1,3 +1,11 @@
+// ============================================================================
+//  Player Piano - ESP32-S3 self-playing acoustic piano
+//  Copyright (c) 2026 Steven Jin <stevenjin20090101@gmail.com>
+//  Original author & creator: Steven Jin.
+//  Licensed under the MIT License (see LICENSE). This copyright and attribution
+//  notice MUST be preserved in all copies or substantial portions of the work.
+//  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
+// ============================================================================
 #include "ui.h"
 #include "config.h"
 #include "power_boards.h"   // g_pwmFreqHz, g_fullPowerMode, setAllBoardsPWMFreq

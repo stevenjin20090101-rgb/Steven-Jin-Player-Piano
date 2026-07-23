@@ -3,3 +3,11 @@
 .claude/
 .DS_Store
 *.code-workspace
+
+# NEVER commit the authorship private key. It lives in your home directory
+# (~/piano-authorship-PRIVATE-DO-NOT-SHARE.pem). Only the PUBLIC key and the
+# signature belong in the repo (see provenance/).
+*PRIVATE*
+*private_key*
+*.pem
+!provenance/author_ed25519_public.pem

@@ -4,6 +4,8 @@ Firmware and control software for a **self-playing acoustic upright piano**: 84 
 
 Built as a permanent interactive installation. **Made by Steven Jin** (firmware, integration, install); power-board electronics designed with a hardware collaborator.
 
+📊 **[Visual overview with diagrams →](docs/OVERVIEW.md)** — architecture, note flow, lighting, and safety, explained with pictures.
+
 ---
 
 ## How it works
@@ -146,6 +148,22 @@ pio device monitor      # serial console @115200 (type 'help')
 ├── lv_conf.h             LVGL configuration
 └── platformio.ini        build config (LilyGo T4-S3)
 ```
+
+## Authorship & license
+
+**Made by Steven Jin** — firmware, LED engine, control software, and integration.
+Licensed under the [MIT License](LICENSE): you're welcome to learn from and build
+on this, but the copyright and attribution notice must be preserved.
+
+This project carries a layered authorship watermark so the work can't be passed
+off as someone else's:
+
+- **Copyright headers** in every source file, plus [`LICENSE`](LICENSE) and [`AUTHORS`](AUTHORS).
+- **A watermark compiled into the firmware binary** — even a copied `.bin` reveals
+  the origin: `strings firmware.bin | grep PPFW`.
+- **A cryptographic Ed25519 signature** over the whole source tree —
+  see [`PROVENANCE.md`](PROVENANCE.md) to verify that Steven Jin authored these
+  exact files (`provenance/verify.py`).
 
 ## Safety notice
 

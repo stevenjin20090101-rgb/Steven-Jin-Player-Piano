@@ -1,3 +1,11 @@
+// ============================================================================
+//  Player Piano - ESP32-S3 self-playing acoustic piano
+//  Copyright (c) 2026 Steven Jin <stevenjin20090101@gmail.com>
+//  Original author & creator: Steven Jin.
+//  Licensed under the MIT License (see LICENSE). This copyright and attribution
+//  notice MUST be preserved in all copies or substantial portions of the work.
+//  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
+// ============================================================================
 // Routes MIDI NoteOn/Off to whichever PCA9685 owns that key on the I²C
 // trunk. Each board handles one chromatic octave; PCA9685 channels 0..11
 // are wired in chromatic order to the solenoids.
@@ -74,6 +82,14 @@ extern uint32_t g_minRetriggerGapMs;
 // we honor the corresponding NoteOff. Forces every strike to be at
 // least this long so very short MIDI notes still produce audible hits.
 extern uint32_t g_minStrikeMs;
+
+// Dynamic min-strike for ISOLATED short notes. A lone staccato note (one that
+// arrives after > g_isoGapMs of silence) is stretched to at least g_isoStrikeMs
+// — longer than the normal g_minStrikeMs — so it actually sounds, while notes
+// inside a fast passage keep the shorter g_minStrikeMs and stay quick.
+// g_isoStrikeMs <= g_minStrikeMs (or g_isoGapMs == 0) disables the boost.
+extern uint32_t g_isoStrikeMs;
+extern uint32_t g_isoGapMs;
 
 // Auto re-strike (tremolo sustain). While a note is held, re-hit it every
 // g_restrikeMs (0 = off) so long notes stay audible instead of striking

@@ -152,9 +152,10 @@
 </head>
 <body>
 
+<!-- Player Piano web GUI  |  (c) 2026 Steven Jin <stevenjin20090101@gmail.com>  |  MIT (see LICENSE) |  authorship: Ed25519 fp eab16a502f679465, see PROVENANCE.md -->
 <header>
   <div>
-    <h1>Piano Controller</h1>
+    <h1>Piano Controller﻿​‌​‌​​‌‌​‌​​‌​‌​​‌‌‌‌‌​​​‌‌​​‌​‌​‌‌​​​​‌​‌‌​​​‌​​​‌‌​​​‌​​‌‌​‌‌​​‌‌​​​​‌​​‌‌​‌​‌​​‌‌​​​​​​‌‌​​‌​​‌‌​​‌‌​​​‌‌​‌‌​​​‌‌​‌‌‌​​‌‌‌​​‌​​‌‌​‌​​​​‌‌​‌‌​​​‌‌​‌​‌﻿</h1>
     <div class="meta">Web Serial · Chrome/Edge required · 115200 baud</div>
   </div>
   <span style="flex:1"></span>
@@ -165,6 +166,17 @@
 </header>
 
 <div class="grid">
+
+  <!-- Feel presets -->
+  <div class="card">
+    <h2>Feel presets <small style="text-transform:none;letter-spacing:0">(one-tap streamline)</small></h2>
+    <div class="hint">Set the whole feel at once, then fine-tune below if you want.</div>
+    <div class="btn-row">
+      <button id="preset-cinematic">🎬 Cinematic</button>
+      <button class="ghost" id="preset-snappy">⚡ Snappy</button>
+    </div>
+    <div class="hint"><b>Cinematic</b> — velocity dynamics + soft release, reactive LEDs (for subtle Zimmer/Interstellar-style playing). <b>Snappy</b> — max force, lowest latency, LEDs off (for fast, dense songs).</div>
+  </div>
 
   <!-- PWM tuning -->
   <div class="card">
@@ -203,9 +215,19 @@
       <input type="range" id="gap" min="0" max="300" value="30">
     </label>
     <label class="full">
-      <div class="label-line"><span class="name">Min strike duration <small>(rescues short notes)</small></span>
+      <div class="label-line"><span class="name">Min strike duration <small>(rescues short notes in a run)</small></span>
         <span class="value" id="minstrike-val">60 ms</span></div>
       <input type="range" id="minstrike" min="0" max="500" value="60">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Lone-note strike <small>(longer, so isolated staccato sounds)</small></span>
+        <span class="value" id="isostrike-val">95 ms</span></div>
+      <input type="range" id="isostrike" min="0" max="500" value="95">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Lone-note gap <small>(silence before a note counts as isolated; 0 = off)</small></span>
+        <span class="value" id="isogap-val">180 ms</span></div>
+      <input type="range" id="isogap" min="0" max="1000" value="180">
     </label>
     <label class="full">
       <div class="label-line"><span class="name">Auto re-strike <small>(tremolo sustain for held notes; 0 = off)</small></span>
@@ -252,6 +274,87 @@
       <button class="danger" id="off-btn">All off (panic)</button>
       <button class="ghost" id="broadcast-btn">ALLCALL FULL_OFF</button>
     </div>
+  </div>
+
+  <!-- LED lighting -->
+  <div class="card">
+    <h2>LED lighting</h2>
+    <div class="row">
+      <span class="label">Mode</span>
+      <div class="btn-row" style="flex:1;justify-content:flex-end">
+        <button class="ghost" id="ledmode-0">Off</button>
+        <button class="ghost" id="ledmode-1">Static</button>
+        <button class="ghost" id="ledmode-2">Rainbow</button>
+        <button id="ledmode-3">Reactive</button>
+      </div>
+    </div>
+    <label class="full">
+      <div class="label-line"><span class="name">Brightness</span>
+        <span class="value" id="ledbright-val">63%</span></div>
+      <input type="range" id="ledbright" min="0" max="255" value="160">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Glow width <small>(spread each note over neighbours)</small></span>
+        <span class="value" id="ledglow-val">±1</span></div>
+      <input type="range" id="ledglow" min="0" max="10" value="1">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Fade speed <small>(higher = shorter linger)</small></span>
+        <span class="value" id="decay-val">6</span></div>
+      <input type="range" id="decay" min="1" max="40" value="6">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Rainbow speed <small>(rainbow mode)</small></span>
+        <span class="value" id="rainspeed-val">1</span></div>
+      <input type="range" id="rainspeed" min="1" max="40" value="1">
+    </label>
+    <div class="row">
+      <span class="label">Velocity → brightness <small>(harder = brighter)</small></span>
+      <div id="velbright" class="switch"></div>
+    </div>
+    <div class="hint">Note-reactive palette — pick the colors for music reaction</div>
+    <div class="btn-row" id="palette-row">
+      <button class="ghost" id="react-0">Rainbow</button>
+      <button class="ghost" id="react-1">Solid</button>
+      <button class="ghost" id="react-2">Velocity</button>
+      <button class="ghost" id="react-3">Fire</button>
+      <button class="ghost" id="react-4">Ocean</button>
+      <button class="ghost" id="react-5">Forest</button>
+      <button class="ghost" id="react-6">Lava</button>
+      <button class="ghost" id="react-7">Party</button>
+    </div>
+    <div class="hint">Alignment — slide until the lit LED sits under the played key</div>
+    <label class="full">
+      <div class="label-line"><span class="name">LED count <small>(physical LEDs on strip)</small></span>
+        <span class="value" id="ledcount-val">73 LEDs</span></div>
+      <input type="range" id="ledcount" min="1" max="300" value="73">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Offset <small>(fine per-light shift)</small></span>
+        <span class="value" id="ledoffset-val">0</span></div>
+      <input type="range" id="ledoffset" min="-100" max="100" value="0">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Scale <small>(drift trim: fewer LEDs than keys)</small></span>
+        <span class="value" id="ledscale-val">100%</span></div>
+      <input type="range" id="ledscale" min="10" max="400" value="100">
+    </label>
+    <label class="full">
+      <div class="label-line"><span class="name">Keys-end trim <small>(dark LEDs past last solenoid key)</small></span>
+        <span class="value" id="ledtail-val">none</span></div>
+      <input type="range" id="ledtail" min="0" max="20" value="0">
+    </label>
+    <div class="row">
+      <span class="label">Reverse direction <small>(high→low notes)</small></span>
+      <div id="ledreverse" class="switch"></div>
+    </div>
+    <div class="hint">Calibrate: light a key's LED white, then align it</div>
+    <div class="btn-row">
+      <button class="ghost" id="cal-low">Test lowest key</button>
+      <button class="ghost" id="cal-mid">Test middle</button>
+      <button class="ghost" id="cal-high">Test highest key</button>
+    </div>
+    <div class="hint">Two-point method: “Test lowest” → fix with Offset. “Test highest” → fix with Scale. Then play in Reactive mode.</div>
   </div>
 
   <!-- Test note -->
@@ -527,12 +630,22 @@ const fmtLabel = {
   hold:       v => v + " ms",
   gap:        v => v + " ms",
   minstrike:  v => v + " ms",
+  isostrike:  v => v + " ms",
+  isogap:     v => (v == 0 ? "off" : v + " ms"),
   restrike:   v => (v < 40 ? "off" : v + " ms"),
   releasepwm: v => v,
   releasems:  v => v + " ms",
   freq:       v => v + " Hz",
   velmult:    v => (v/100).toFixed(2) + "×",
   keyforce:   v => (v/100).toFixed(2) + "×",
+  ledbright:  v => Math.round(v*100/255) + "%",
+  ledcount:   v => v + " LEDs",
+  ledoffset:  v => (v>0?"+":"") + v,
+  ledscale:   v => v + "%",
+  ledtail:    v => (v==0 ? "none" : v + " dark"),
+  ledglow:    v => (v==0 ? "off" : "±" + v),
+  decay:      v => v,
+  rainspeed:  v => v,
 };
 
 // id -> serial command builder
@@ -543,11 +656,21 @@ const cmdFor = {
   hold:       v => `hold ${v}`,
   gap:        v => `gap ${v}`,
   minstrike:  v => `minstrike ${v}`,
+  isostrike:  v => `isostrike ${v}`,
+  isogap:     v => `isogap ${v}`,
   restrike:   v => `restrike ${v < 40 ? 0 : v}`,   // firmware wants 0 or 40..1000
   releasepwm: v => `releasepwm ${v}`,
   releasems:  v => `releasems ${v}`,
   freq:       v => `freq ${v}`,
   velmult:    v => `velmult ${(v/100).toFixed(2)}`,
+  ledbright:  v => `ledbright ${v}`,
+  ledcount:   v => `ledcount ${v}`,
+  ledoffset:  v => `ledoffset ${v}`,
+  ledscale:   v => `ledscale ${v}`,
+  ledtail:    v => `ledtail ${v}`,
+  ledglow:    v => `ledglow ${v}`,
+  decay:      v => `decay ${v}`,
+  rainspeed:  v => `rainspeed ${v}`,
 };
 
 for (const id of Object.keys(cmdFor)) {
@@ -578,6 +701,51 @@ $("softrelease").addEventListener("click", () => {
   sw.classList.toggle("on");
   sendCmd("softrelease " + (sw.classList.contains("on") ? "1" : "0"));
 });
+
+// LED mode buttons (0 off, 1 static, 2 rainbow, 3 reactive) — selected one
+// is highlighted (loses the "ghost" style), the rest go ghost.
+for (let m = 0; m <= 3; m++) {
+  $("ledmode-" + m).addEventListener("click", () => {
+    sendCmd("ledmode " + m);
+    for (let k = 0; k <= 3; k++) $("ledmode-" + k).classList.toggle("ghost", k !== m);
+  });
+}
+
+// Note-reactive palette buttons (0..7)
+for (let p = 0; p <= 7; p++) {
+  $("react-" + p).addEventListener("click", () => {
+    sendCmd("reactcolor " + p);
+    for (let k = 0; k <= 7; k++) $("react-" + k).classList.toggle("ghost", k !== p);
+  });
+}
+
+// LED strip reverse-direction toggle
+$("ledreverse").addEventListener("click", () => {
+  const sw = $("ledreverse");
+  sw.classList.toggle("on");
+  sendCmd("ledreverse " + (sw.classList.contains("on") ? "1" : "0"));
+});
+
+// Feel presets — one tap sets everything, then re-reads state into the log.
+$("preset-cinematic").addEventListener("click", () => {
+  sendCmd("cinematic"); setTimeout(() => sendCmd("status"), 300);
+});
+$("preset-snappy").addEventListener("click", () => {
+  sendCmd("snappy"); setTimeout(() => sendCmd("status"), 300);
+});
+
+// Velocity → brightness toggle
+$("velbright").addEventListener("click", () => {
+  const sw = $("velbright");
+  sw.classList.toggle("on");
+  sendCmd("velbright " + (sw.classList.contains("on") ? "1" : "0"));
+});
+
+// Alignment calibration — light the LED for the lowest / middle / highest key
+// white for a few seconds so you can trim Offset (low) then Scale (high).
+$("cal-low").addEventListener("click",  () => sendCmd("ledtest 24"));   // C1
+$("cal-mid").addEventListener("click",  () => sendCmd("ledtest 65"));   // ~F4
+$("cal-high").addEventListener("click", () => sendCmd("ledtest 107"));  // B7
 
 // --- Action buttons ----------------------------------------------------------
 

@@ -1,3 +1,11 @@
+// ============================================================================
+//  Player Piano - ESP32-S3 self-playing acoustic piano
+//  Copyright (c) 2026 Steven Jin <stevenjin20090101@gmail.com>
+//  Original author & creator: Steven Jin.
+//  Licensed under the MIT License (see LICENSE). This copyright and attribution
+//  notice MUST be preserved in all copies or substantial portions of the work.
+//  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
+// ============================================================================
 // LilyGo T4-S3 piano controller firmware
 //
 // Acts as a BLE MIDI peripheral so apps like Synthesia (iPad) can stream
@@ -59,6 +67,18 @@ BLEMIDI_CREATE_INSTANCE(BLE_MIDI_DEVICE_NAME, MIDI)
 
 CRGB leds[LED_COUNT];
 
+// --- Authorship watermark -------------------------------------------------
+// Compiled into the firmware image (kept by __attribute__((used)) so the
+// optimizer can't drop it), so even a stolen, header-stripped BINARY still
+// carries its origin.  Reveal with:  strings firmware.bin | grep PPFW
+// The cryptographic proof (Ed25519 signature) is in PROVENANCE.md — this
+// fingerprint ties this binary to that signature.
+__attribute__((used)) static const volatile char kBuildProvenance[] =
+    "PPFW-PROVENANCE::author=Steven Jin::"
+    "ed25519fp=eab16a502f679465::"
+    "id=stevenjin20090101@gmail.com::year=2026::"
+    "proof=see-PROVENANCE.md";
+
 AppState appState = {
     .bleConnected = false,
     .peerName = "",
@@ -71,6 +91,14 @@ AppState appState = {
     .ledStaticColor = 0x0040FF,
     .rainbowSpeed = 1,
     .noteDecayRate = 6,
+    .ledCount = DEFAULT_LED_ACTIVE,
+    .ledOffset = DEFAULT_LED_OFFSET,
+    .ledScalePct = DEFAULT_LED_SCALE_PCT,
+    .ledTail = DEFAULT_LED_TAIL,
+    .ledReverse = (DEFAULT_LED_REVERSE != 0),
+    .ledReactivePalette = DEFAULT_REACT_PALETTE,
+    .ledGlow = DEFAULT_LED_GLOW,
+    .ledVelBright = (DEFAULT_LED_VELBRIGHT != 0),
     .inputMode = INPUT_MODE_BLE_ONLY,
     .touchVelocity = 100,
 };
@@ -93,14 +121,84 @@ static const char *noteNameC(uint8_t note) {
     return buf;
 }
 
-// per-LED decay buffer used by note-reactive mode
-static uint8_t noteHeat[LED_COUNT] = {0};
-static uint8_t noteHue[LED_COUNT]  = {0};
+// per-LED decay buffers used by note-reactive mode. noteHeat is the fading
+// brightness envelope; noteColor is the base colour picked by the palette
+// when the note fired (so any palette works, not just hue-by-pitch).
+static uint8_t noteHeat[LED_COUNT]  = {0};
+static CRGB    noteColor[LED_COUNT];
+// Per-LED count of currently-held notes. While > 0 the LED stays lit at full
+// (sustain) instead of decaying; it only fades once the key(s) are released.
+// A counter (not a bool) because several notes can map to the same LED.
+static uint8_t ledHeld[LED_COUNT]   = {0};
 
+static void clearLedReactive() {
+    memset(noteHeat, 0, sizeof(noteHeat));
+    memset(ledHeld,  0, sizeof(ledHeld));
+}
+// Set true when a note lights an LED, so the loop pushes a frame within ~12 ms
+// instead of waiting for the next 30 fps tick — makes reactions feel instant.
+static volatile bool s_ledReactiveDirty = false;
+
+// Calibration marker: 'ledtest <note>' lights exactly the LED that note maps
+// to (bright white) for a few seconds, overriding the current mode, so you can
+// see whether that key's LED lines up and trim scale/offset until it does.
+static int      s_ledTestIdx     = -1;
+static uint32_t s_ledTestUntilMs = 0;
+
+// Number of physical LEDs actually driven (clamped to the array size).
+static inline int ledN() {
+    int n = appState.ledCount;
+    if (n < 1) n = 1;
+    if (n > LED_COUNT) n = LED_COUNT;
+    return n;
+}
+
+// Number of LEDs the playable KEYS map onto = physical count minus the tail
+// LEDs that sit past the last solenoid key. Notes only ever light [0..this-1];
+// the tail LEDs [this..ledN()-1] are driven but held dark.
+static inline int ledUsable() {
+    int n = ledN() - (int)appState.ledTail;
+    if (n < 1) n = 1;
+    return n;
+}
+
+// Map a MIDI note to a physical LED index, honouring the runtime strip length,
+// SCALE (gain, corrects drift when there are fewer LEDs than keys), direction,
+// and OFFSET (fine per-light shift) so the lit LED lines up under the key.
+// Anchored at the low end: Offset pins the low key, Scale then stretches the
+// spread so the high key lands right — classic two-point calibration.
 static int noteToLed(uint8_t note) {
     if (note < MIDI_NOTE_MIN) note = MIDI_NOTE_MIN;
     if (note > MIDI_NOTE_MAX) note = MIDI_NOTE_MAX;
-    return map(note, MIDI_NOTE_MIN, MIDI_NOTE_MAX, 0, LED_COUNT - 1);
+    int n = ledUsable();                           // map only over keyed LEDs
+    int span = MIDI_NOTE_MAX - MIDI_NOTE_MIN;      // key range width
+    if (span < 1) span = 1;
+    // fraction along the keyboard (0..1) × scale gain, spread over the strip
+    long scaled = (long)(note - MIDI_NOTE_MIN) * (n - 1) * (long)appState.ledScalePct;
+    int idx = (int)(scaled / (100L * span));
+    if (appState.ledReverse) idx = (n - 1) - idx;
+    idx += appState.ledOffset;
+    if (idx < 0) idx = 0;
+    if (idx >= n) idx = n - 1;                      // never enters the dark tail
+    return idx;
+}
+
+// Pick the base colour for a note in note-reactive mode, per the selected
+// palette. Pitch-indexed palettes spread colour across the keyboard; the
+// velocity palette colours by how hard the key was hit.
+static CRGB reactiveColorFor(uint8_t note, uint8_t vel) {
+    uint8_t pitchIdx = map(note, MIDI_NOTE_MIN, MIDI_NOTE_MAX, 0, 255);
+    switch (appState.ledReactivePalette) {
+        case 1: return CRGB(appState.ledStaticColor);                       // solid
+        case 2: return CHSV(map(vel, 1, 127, 160, 0), 255, 255);            // velocity: soft blue → hard red
+        case 3: return ColorFromPalette(HeatColors_p,   pitchIdx);          // fire
+        case 4: return ColorFromPalette(OceanColors_p,  pitchIdx);          // ocean
+        case 5: return ColorFromPalette(ForestColors_p, pitchIdx);          // forest
+        case 6: return ColorFromPalette(LavaColors_p,   pitchIdx);          // lava
+        case 7: return ColorFromPalette(PartyColors_p,  pitchIdx);          // party
+        case 0:
+        default: return CHSV(map(note, MIDI_NOTE_MIN, MIDI_NOTE_MAX, 0, 240), 255, 255); // pitch rainbow
+    }
 }
 
 // One-shot bus walk: probe every 7-bit address and log who answers. Useful
@@ -282,6 +380,17 @@ static void updateLeds() {
     // "crashes on complex songs".
     if (!g_ledsEnabled) return;
 
+    // Calibration override: while a 'ledtest' marker is active, show ONLY that
+    // one LED bright white so you can line it up under the played key.
+    if (s_ledTestIdx >= 0 && (int32_t)(s_ledTestUntilMs - millis()) > 0) {
+        fill_solid(leds, LED_COUNT, CRGB::Black);
+        if (s_ledTestIdx < ledN()) leds[s_ledTestIdx] = CRGB::White;
+        FastLED.setBrightness(appState.ledBrightness);
+        FastLED.show();
+        return;
+    }
+    if (s_ledTestIdx >= 0) { s_ledTestIdx = -1; clearLedReactive(); }
+
     // Skip redundant shows: at 300 LEDs each FastLED.show() is ~9 ms of
     // core-1 time. OFF and idle NOTE_REACTIVE frames are identical black
     // frames — pushing them every 33 ms is pure waste, and during heavy
@@ -296,7 +405,7 @@ static void updateLeds() {
     bool modeChanged = (appState.ledMode != s_prevMode);
     if (modeChanged) {
         s_prevMode = appState.ledMode;
-        memset(noteHeat, 0, sizeof(noteHeat));
+        clearLedReactive();                // wipe heat + held state
         s_prevHadContent = true;           // force one frame in the new mode
     }
 
@@ -320,7 +429,8 @@ static void updateLeds() {
             }
             s_lastStatic = appState.ledStaticColor;
             s_lastStaticBri = appState.ledBrightness;
-            fill_solid(leds, LED_COUNT, CRGB(appState.ledStaticColor));
+            fill_solid(leds, LED_COUNT, CRGB::Black);
+            fill_solid(leds, ledUsable(), CRGB(appState.ledStaticColor));
             FastLED.setBrightness(appState.ledBrightness);
             FastLED.show();
             return;                           // shown once; skip the tail show
@@ -328,22 +438,36 @@ static void updateLeds() {
         case LED_MODE_RAINBOW: {
             static uint8_t hue = 0;
             // Per-LED hue math instead of fill_rainbow's uint8 deltaHue:
-            // 256 / 300 truncates to 0, which rendered the whole 300-LED
-            // strip a single solid color. This spreads one full wheel
-            // across the strip regardless of LED_COUNT.
+            // 256 / count truncates to 0 on long strips, which rendered the
+            // whole strip a single solid color. This spreads one full wheel
+            // across exactly the keyed strip length (tail LEDs stay dark).
+            int n = ledUsable();
             for (int i = 0; i < LED_COUNT; ++i) {
-                leds[i] = CHSV(hue + (uint8_t)((i * 256) / LED_COUNT), 255, 255);
+                leds[i] = (i < n) ? (CRGB)CHSV(hue + (uint8_t)((i * 256) / n), 255, 255)
+                                  : CRGB::Black;
             }
             hue += appState.rainbowSpeed;
             break;
         }
         case LED_MODE_NOTE_REACTIVE: {
             uint8_t decay = appState.noteDecayRate;
+            if (decay < 1) decay = 1;
             hasContent = false;
+            int n = ledUsable();            // tail LEDs stay dark (no solenoid there)
             for (int i = 0; i < LED_COUNT; ++i) {
-                if (noteHeat[i] > 0) {
+                if (i < n && ledHeld[i] > 0) {
+                    // Key still held → keep the LED lit, DON'T fade (sustain).
+                    if (noteHeat[i] == 0) noteHeat[i] = 255;   // ensure it's visible
                     hasContent = true;
-                    leds[i] = CHSV(noteHue[i], 255, noteHeat[i]);
+                    CRGB c = noteColor[i];
+                    c.nscale8(noteHeat[i]);
+                    leds[i] = c;
+                } else if (i < n && noteHeat[i] > 0) {
+                    // Released → fade out from wherever it was.
+                    hasContent = true;
+                    CRGB c = noteColor[i];
+                    c.nscale8(noteHeat[i]);
+                    leds[i] = c;
                     noteHeat[i] = (noteHeat[i] > decay) ? noteHeat[i] - decay : 0;
                 } else {
                     leds[i] = CRGB::Black;
@@ -410,6 +534,7 @@ static void printHelp() {
         "    broadcast                ALLCALL FULL_OFF (hits every PCA9685 at once)\n"
         "    panic                    EMERGENCY STOP — 5x ALLCALL + force Full Power on\n"
         "    snappy                   lowest-latency preset (leds off, no deferral) + save\n"
+        "    cinematic                soft/expressive preset (velocity dynamics + soft release) + save\n"
         "    save                     persist current settings to flash now\n"
         "    reset                    wipe saved settings; reboot to revert to defaults\n"
         "    sweep                    re-run the test sweep\n"
@@ -419,6 +544,8 @@ static void printHelp() {
         "    hold <ms>                safety auto-release timeout (default 5000)\n"
         "    gap <0..300>             min ms between same-key NoteOff and next NoteOn (default 30)\n"
         "    minstrike <0..500>       min ms a solenoid stays energized — fixes \"short notes forgotten\"\n"
+        "    isostrike <0..500>       longer min-strike for a LONE short note (after silence) so it sounds\n"
+        "    isogap <0..2000>         silence (ms) before a note counts as isolated (0 = boost off)\n"
         "    restrike <0|40..1000>    auto re-hit held notes every N ms (tremolo sustain; 0=off)\n"
         "    softrelease 0|1          cushion current on release to stop the backstop clank\n"
         "    releasepwm <0..4095>     cushion current level (default 1100)\n"
@@ -432,6 +559,19 @@ static void printHelp() {
         "    fullpower 0|1            1 = no PWM, FULL_ON every note (max force, no hum)\n"
         "    keyviz 0|1               piano keyboard key-highlight on NoteOn/Off\n"
         "    leds 0|1                 WS2812 strip (OFF frees ~9ms/frame under heavy load)\n"
+        "    ledmode <0..3>           0 off, 1 static, 2 rainbow, 3 note-reactive\n"
+        "    ledbright <0..255>       LED strip brightness\n"
+        "    ledcount <1..300>        physical LEDs on the strip (sets note→LED scale)\n"
+        "    ledoffset <n>            fine shift the lit LED under the played key (+/-)\n"
+        "    ledscale <10..400>       %% gain on note→LED spread (fix drift, fewer LEDs than keys)\n"
+        "    ledtail <n>              keep the last N LEDs dark (past keys with no solenoid)\n"
+        "    ledtest <midi>           light that key's LED white for 4s (alignment calibration)\n"
+        "    ledreverse 0|1           flip strip direction (high→low notes)\n"
+        "    reactcolor <0..7>        reactive palette: rainbow/solid/velocity/fire/ocean/forest/lava/party\n"
+        "    ledglow <0..10>          spread each note across ±N neighbour LEDs (fuller look)\n"
+        "    velbright 0|1            note brightness follows how hard you play\n"
+        "    decay <1..40>            note fade speed (higher = shorter linger)\n"
+        "    rainspeed <1..40>        rainbow-mode scroll speed\n"
         "    dimsecs <0..3600>        screen idle-dim delay in seconds (0 = never dim)\n"
         "    waterfall 0|1            (removed — no-op, retained for back-compat)\n"
         "    fire <board> <ch> <pwm>  fire one channel (board 0..6, ch 0..15)\n"
@@ -443,6 +583,9 @@ static void printStatus() {
     Serial.printf("\n  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
                   g_sweepStrikePWM, g_minStrikePWM, g_maxStrikePWM,
                   (unsigned long)g_maxHoldMs, g_velocityMult);
+    Serial.printf("  isostrike=%lu ms (lone-note boost)  isogap=%lu ms  %s\n",
+                  (unsigned long)g_isoStrikeMs, (unsigned long)g_isoGapMs,
+                  (g_isoStrikeMs > g_minStrikeMs && g_isoGapMs > 0) ? "[active]" : "[off]");
     Serial.printf("  freq=%u Hz   fullpower=%s   gap=%lu ms   minstrike=%lu ms\n",
                   g_pwmFreqHz, g_fullPowerMode ? "ON" : "OFF",
                   (unsigned long)g_minRetriggerGapMs,
@@ -454,6 +597,20 @@ static void printStatus() {
                   (unsigned long)g_restrikeMs);
     Serial.printf("  leds=%s   dimsecs=%lu s (0=never)\n",
                   g_ledsEnabled ? "ON" : "OFF", (unsigned long)g_idleDimSecs);
+    {
+        const char *mn[] = {"off","static","rainbow","reactive"};
+        const char *pn[] = {"rainbow","solid","velocity","fire","ocean","forest","lava","party"};
+        uint8_t md = appState.ledMode < LED_MODE_COUNT ? appState.ledMode : 0;
+        uint8_t pl = appState.ledReactivePalette < REACT_PALETTE_COUNT ? appState.ledReactivePalette : 0;
+        Serial.printf("  led: mode=%s bright=%u/255 count=%u offset=%d scale=%u%% reverse=%s palette=%s\n",
+                      mn[md], appState.ledBrightness, appState.ledCount,
+                      appState.ledOffset, appState.ledScalePct,
+                      appState.ledReverse ? "on" : "off", pn[pl]);
+        Serial.printf("       glow=%u velbright=%s decay=%u rainspeed=%u tail=%u (keyed LEDs=%d)\n",
+                      appState.ledGlow, appState.ledVelBright ? "on" : "off",
+                      appState.noteDecayRate, appState.rainbowSpeed,
+                      appState.ledTail, ledUsable());
+    }
     Serial.printf("  i2cFails=%lu (rises during PWM-EMI storms; steady 0 is healthy)\n",
                   (unsigned long)g_i2cFailCount);
     Serial.println("  boards:");
@@ -481,6 +638,7 @@ static void handleLine(char *line) {
         printStatus();
     } else if (!strcmp(line, "off")) {
         allKeysOff();
+        clearLedReactive();
         Serial.println("  all keys released (per-board + ALLCALL)");
     } else if (!strcmp(line, "broadcast")) {
         broadcastAllOff();
@@ -491,6 +649,7 @@ static void handleLine(char *line) {
         // forces Full Power mode so any further notes don't use PWM.
         for (int i = 0; i < 5; ++i) { broadcastAllOff(); delay(40); }
         allKeysOff();
+        clearLedReactive();
         g_fullPowerMode = true;
         Serial.println("  PANIC: all solenoids released, Full Power forced ON");
     } else if (!strcmp(line, "snappy")) {
@@ -502,10 +661,32 @@ static void handleLine(char *line) {
         g_minStrikeMs   = 20;       // just enough to guarantee a strike
         g_softRelease   = false;    // no release cushion / extra I2C write
         g_restrikeMs    = 0;        // no auto-tremolo
+        clearLedReactive();
         fill_solid(leds, LED_COUNT, CRGB::Black); FastLED.show();
         settings_save();
         Serial.println("  SNAPPY preset applied + saved: leds off, fullpower, gap 0, "
                        "minstrike 20, softrelease off, restrike off — lowest latency");
+    } else if (!strcmp(line, "cinematic")) {
+        // Expressive/soft preset for subtle pieces (Interstellar, Zimmer, etc.):
+        // velocity DYNAMICS on (so pp stays soft, ff swells), a gentle release
+        // cushion to kill the backstop clank, and short min-strike so quiet
+        // notes still sound. Leaves the user's min/max strike RANGE alone (that's
+        // the piano-specific soft↔loud calibration) — this flips the enablers.
+        g_fullPowerMode = false;    // <-- key: velocity→force dynamics (not max-every-note)
+        g_softRelease   = true;     // cushion current on release = no clank
+        g_releasePwm    = DEFAULT_RELEASE_PWM;
+        g_releaseMs     = 28;       // gentle let-down
+        g_minStrikeMs   = 45;       // soft short notes still strike
+        g_minRetriggerGapMs = 22;   // clean fast repeats without machine-gunning
+        g_restrikeMs    = 0;        // no tremolo by default (add with 'restrike' if a note must sing)
+        g_ledsEnabled   = true;     // lights on
+        appState.ledMode = LED_MODE_NOTE_REACTIVE;
+        settings_save();
+        Serial.printf("  CINEMATIC preset applied + saved: velocity dynamics ON, soft-release ON, "
+                      "minstrike 45, gap 22. Strike range kept (min=%u max=%u).\n"
+                      "  For soft pp: lower 'min' until the quietest notes just barely sound.\n"
+                      "  For a note that must sustain: 'restrike 120' adds a gentle tremolo.\n",
+                      g_minStrikePWM, g_maxStrikePWM);
     } else if (!strcmp(line, "save")) {
         settings_save();
     } else if (!strcmp(line, "reset")) {
@@ -544,6 +725,19 @@ static void handleLine(char *line) {
         if (v < 0 || v > 500) { Serial.println("  minstrike out of range (0..500 ms)"); return; }
         g_minStrikeMs = (uint32_t)v;
         Serial.printf("  g_minStrikeMs = %d ms — short NoteOffs deferred so the solenoid actually strikes\n", v);
+    } else if (!strncmp(line, "isostrike ", 10)) {
+        int v = atoi(line + 10);
+        if (v < 0 || v > 500) { Serial.println("  isostrike out of range (0..500 ms)"); return; }
+        g_isoStrikeMs = (uint32_t)v;
+        Serial.printf("  g_isoStrikeMs = %d ms — a LONE short note (after silence) is stretched to at least this "
+                      "(vs %lu ms inside a run). %s\n", v, (unsigned long)g_minStrikeMs,
+                      (g_isoStrikeMs > g_minStrikeMs && g_isoGapMs > 0) ? "active" : "(<= minstrike or gap 0 → OFF)");
+    } else if (!strncmp(line, "isogap ", 7)) {
+        int v = atoi(line + 7);
+        if (v < 0 || v > 2000) { Serial.println("  isogap out of range (0..2000 ms)"); return; }
+        g_isoGapMs = (uint32_t)v;
+        Serial.printf("  g_isoGapMs = %d ms — a note with more than this much silence before it counts as isolated "
+                      "(0 = boost OFF)\n", v);
     } else if (!strncmp(line, "restrike ", 9)) {
         int v = atoi(line + 9);
         if (v != 0 && (v < 40 || v > 1000)) {
@@ -637,10 +831,83 @@ static void handleLine(char *line) {
     } else if (!strncmp(line, "leds ", 5)) {
         int v = atoi(line + 5);
         g_ledsEnabled = (v != 0);
-        if (!g_ledsEnabled) { fill_solid(leds, LED_COUNT, CRGB::Black); FastLED.show(); }
+        if (!g_ledsEnabled) { clearLedReactive(); fill_solid(leds, LED_COUNT, CRGB::Black); FastLED.show(); }
         Serial.printf("  LEDs = %s%s\n", g_ledsEnabled ? "ON" : "OFF",
                       g_ledsEnabled ? "" : " (no FastLED work — frees ~9ms/frame under load)");
-    } else if (!strncmp(line, "fire ", 5)) {
+    } else if (!strncmp(line, "ledmode ", 8)) {
+        int v = atoi(line + 8);
+        if (v < 0 || v >= LED_MODE_COUNT) { Serial.println("  ledmode 0=off 1=static 2=rainbow 3=reactive"); return; }
+        appState.ledMode = (LedMode)v;
+        const char *nm[] = {"OFF","STATIC","RAINBOW","NOTE-REACTIVE"};
+        Serial.printf("  LED mode = %s\n", nm[v]);
+    } else if (!strncmp(line, "ledbright ", 10)) {
+        int v = atoi(line + 10);
+        if (v < 0 || v > 255) { Serial.println("  ledbright out of range (0..255)"); return; }
+        appState.ledBrightness = (uint8_t)v;
+        FastLED.setBrightness(appState.ledBrightness);
+        Serial.printf("  LED brightness = %d/255 (%d%%)\n", v, (v * 100) / 255);
+    } else if (!strncmp(line, "ledcount ", 9)) {
+        int v = atoi(line + 9);
+        if (v < 1 || v > LED_COUNT) { Serial.printf("  ledcount out of range (1..%d)\n", LED_COUNT); return; }
+        appState.ledCount = (uint16_t)v;
+        memset(noteHeat, 0, sizeof(noteHeat));
+        Serial.printf("  LED count = %d (mapping updates live; reboot to change clock-out length)\n", v);
+    } else if (!strncmp(line, "ledoffset ", 10)) {
+        int v = atoi(line + 10);
+        if (v < -LED_COUNT || v > LED_COUNT) { Serial.println("  ledoffset out of range"); return; }
+        appState.ledOffset = (int16_t)v;
+        Serial.printf("  LED offset = %d (shifts the lit LED under the played key)\n", v);
+    } else if (!strncmp(line, "ledreverse ", 11)) {
+        int v = atoi(line + 11);
+        appState.ledReverse = (v != 0);
+        Serial.printf("  LED reverse = %s (strip runs %s)\n",
+                      appState.ledReverse ? "ON" : "OFF",
+                      appState.ledReverse ? "high-note → low-note" : "low-note → high-note");
+    } else if (!strncmp(line, "reactcolor ", 11)) {
+        int v = atoi(line + 11);
+        if (v < 0 || v >= REACT_PALETTE_COUNT) { Serial.println("  reactcolor 0..7 (rainbow/solid/velocity/fire/ocean/forest/lava/party)"); return; }
+        appState.ledReactivePalette = (uint8_t)v;
+        const char *pn[] = {"pitch-rainbow","solid","velocity","fire","ocean","forest","lava","party"};
+        Serial.printf("  note-reactive palette = %d (%s)\n", v, pn[v]);
+    } else if (!strncmp(line, "ledscale ", 9)) {
+        int v = atoi(line + 9);
+        if (v < 10 || v > 400) { Serial.println("  ledscale out of range (10..400 %)"); return; }
+        appState.ledScalePct = (uint16_t)v;
+        Serial.printf("  LED scale = %d%% (trims the note→LED drift across the keyboard)\n", v);
+    } else if (!strncmp(line, "ledtail ", 8)) {
+        int v = atoi(line + 8);
+        if (v < 0 || v >= LED_COUNT) { Serial.println("  ledtail out of range"); return; }
+        appState.ledTail = (uint8_t)v;
+        clearLedReactive();
+        Serial.printf("  LED tail = %d — the last %d LED(s) (past the solenoid keys) stay dark; "
+                      "notes now map across %d LEDs\n", v, v, ledUsable());
+    } else if (!strncmp(line, "ledtest ", 8)) {
+        int note = atoi(line + 8);
+        if (note < 0 || note > 127) { Serial.println("  usage: ledtest <midi 0..127>"); return; }
+        s_ledTestIdx = noteToLed((uint8_t)note);
+        s_ledTestUntilMs = millis() + 4000;    // hold the white marker ~4 s
+        s_ledReactiveDirty = true;
+        Serial.printf("  ledtest: note %d (%s) → LED %d lit white for 4 s — align it under the key\n",
+                      note, noteNameC((uint8_t)note), s_ledTestIdx);
+    } else if (!strncmp(line, "ledglow ", 8)) {
+        int v = atoi(line + 8);
+        if (v < 0 || v > 10) { Serial.println("  ledglow out of range (0..10)"); return; }
+        appState.ledGlow = (uint8_t)v;
+        Serial.printf("  LED glow = %d (each note lights ±%d neighbours with falloff)\n", v, v);
+    } else if (!strncmp(line, "velbright ", 10)) {
+        int v = atoi(line + 10);
+        appState.ledVelBright = (v != 0);
+        Serial.printf("  velocity→brightness = %s\n", appState.ledVelBright ? "ON (harder = brighter)" : "OFF (all notes full)");
+    } else if (!strncmp(line, "decay ", 6)) {
+        int v = atoi(line + 6);
+        if (v < 1 || v > 40) { Serial.println("  decay out of range (1..40)"); return; }
+        appState.noteDecayRate = (uint8_t)v;
+        Serial.printf("  decay = %d (higher = notes fade faster / linger less)\n", v);
+    } else if (!strncmp(line, "rainspeed ", 10)) {
+        int v = atoi(line + 10);
+        if (v < 1 || v > 40) { Serial.println("  rainspeed out of range (1..40)"); return; }
+        appState.rainbowSpeed = (uint8_t)v;
+        Serial.printf("  rainbow speed = %d\n", v);
         int b, c, p;
         if (sscanf(line + 5, "%d %d %d", &b, &c, &p) != 3) {
             Serial.println("  usage: fire <board> <channel> <pwm>"); return;
@@ -766,6 +1033,11 @@ void setup() {
     Serial.println("\n[piano] boot");
     logResetReason();
 
+    // Keep the authorship watermark in the flashed image. A volatile read
+    // makes kBuildProvenance a live reference so the linker's --gc-sections
+    // can't drop the string — it then appears in `strings firmware.bin`.
+    { volatile char _kp = kBuildProvenance[0]; (void)_kp; }
+
     // Hardware watchdog. If the main loop hangs for more than 8 s (BLE host
     // task crash, Wire bus lockup, or any freeze), the ESP32 self-reboots.
     // After reboot, broadcastAllOff() below silences any solenoid still
@@ -790,9 +1062,34 @@ void setup() {
     // once we've been running stably for 30 s.
     settings_boot_inc();
 
+    // *** EARLIEST fire-safety release ***
+    // The PCA9685s hold their last PWM state across an ESP reset — a coil that
+    // was energized when we crashed/rebooted is STILL DRIVING right now. On the
+    // isolated board the PCA bus (Wire1) is independent of the display, so bring
+    // it up and broadcast FULL_OFF *before* amoled.begin(), which is slow and —
+    // on a flaky panel or a post-brownout boot — can hang in the infinite loop
+    // below WITHOUT ever releasing the coils. This guarantees solenoids are cut
+    // within ~150 ms of every boot even if the display never comes up.
+#if PCA_USES_WIRE1
+    Wire1.begin(I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ_HZ);
+    PCA_BUS.setTimeOut(5);
+    wire_lock_init();                         // mutex must exist before broadcastAllOff
+    for (int i = 0; i < 3; ++i) { broadcastAllOff(); delay(50); }
+    Serial.println("[boot] early ALLCALL FULL_OFF sent (pre-display safety)");
+#endif
+
     if (!amoled.begin()) {
         Serial.println("[piano] amoled.begin() failed — check board variant");
-        while (true) delay(1000);
+        // Coils are already released above (isolated board). Keep re-releasing
+        // while halted so nothing can creep back on, and feed the watchdog so
+        // this stays a defined, SAFE halt rather than a WDT reboot loop.
+        while (true) {
+            esp_task_wdt_reset();
+#if PCA_USES_WIRE1
+            broadcastAllOff();
+#endif
+            delay(500);
+        }
     }
     amoled.setRotation(1);
     amoled.setBrightness(appState.screenBrightness);
@@ -803,46 +1100,31 @@ void setup() {
     // gives a comfortable floor and we can bump to 400 kHz later once we've
     // verified clean transactions in scope.
 #if PCA_USES_WIRE1
-    // Isolated board: bring up the DEDICATED PCA9685 bus (Wire1) on its own
-    // pins — separate hardware from the touch/PMU bus (Wire) that
-    // amoled.begin() set up.
-    Wire1.begin(I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ_HZ);
+    // Isolated board: the DEDICATED PCA9685 bus (Wire1), its timeout, the wire
+    // mutex, and the emergency all-off were ALL brought up early (before the
+    // display) for fire safety. Re-broadcast FULL_OFF now that every rail is
+    // definitely up — belt-and-suspenders in case the early one raced a rail.
+    for (int i = 0; i < 3; ++i) {
+        broadcastAllOff();
+        delay(50);
+    }
 #else
     // Original board: PCAs share the touch/PMU bus that amoled.begin()
     // already initialized. Just bump the clock — do NOT call Wire.begin()
     // again, that would clobber the touch driver's config.
     Wire.setClock(I2C_FREQ_HZ);
-#endif
     // CRITICAL for PWM-mode responsiveness: the ESP32 Arduino default I²C
-    // timeout is 50 ms PER FAILED TRANSACTION. Under a solenoid-EMI storm
-    // (PWM mode, many keys at once) a burst of glitched writes used to
-    // block the dispatch loop for 50 ms each — seconds of frozen piano
-    // that looked like a performance/lag problem.
-#if PCA_USES_WIRE1
-    // Dedicated bus: only PCA9685s live here. A healthy write at 400 kHz is
-    // ~250 µs, so 5 ms is 20× headroom.
-    PCA_BUS.setTimeOut(5);
-#else
-    // SHARED bus (touch + PMU use this same TwoWire object): keep more
-    // margin for the touch controller's occasional clock stretching /
-    // scheduling latency. 20 ms still cuts worst-case stall 2.5×.
+    // timeout is 50 ms PER FAILED TRANSACTION. 20 ms keeps margin for the
+    // touch controller's clock stretching while cutting worst-case stall 2.5×.
     PCA_BUS.setTimeOut(20);
-#endif
-
-    // Mutex must exist BEFORE any of our code touches the PCA bus
-    // (broadcastAllOff below can also be reached from the NimBLE task on
-    // core 0).
+    // Mutex must exist BEFORE any of our code touches the PCA bus.
     wire_lock_init();
-
-    // Emergency release. If the previous run was killed mid-note, the
-    // PCA9685s kept their last PWM state and are still driving solenoids.
-    // Send ALLCALL FULL_OFF *three times with delays* — one might be lost
-    // to a bus glitch (which is itself often the original crash cause).
-    // Three retries with 50 ms between gives the bus time to recover.
+    // Emergency release — the PCAs kept their last PWM state across the reset.
     for (int i = 0; i < 3; ++i) {
         broadcastAllOff();
         delay(50);
     }
+#endif
 
     initPowerBoards();
     // Scan runs after ui_init() below so the result can also be mirrored on
@@ -855,12 +1137,16 @@ void setup() {
     testSweepAllBoards();
 #endif
 
-    FastLED.addLeds<WS2812B, LED_DATA_PIN, GRB>(leds, LED_COUNT);
+    // Register only the physically-installed LEDs (from NVS, default 73) so
+    // each show() clocks out just the real strip — ~4× faster than clocking
+    // the full 300-LED array and lighter on core-1 during dense passages.
+    // (Changing the count at runtime saves to NVS and takes effect on reboot;
+    //  offset/reverse/palette/brightness all apply live with no reboot.)
+    FastLED.addLeds<WS2812B, LED_DATA_PIN, GRB>(leds, ledN());
     FastLED.setBrightness(appState.ledBrightness);
-    // Hard power budget for the 300-LED BTF strip: 5 V, 3 A. FastLED scales
-    // down any frame that would draw more, so a full-white rainbow can never
-    // brown out the 5 V rail (full white would otherwise be ~18 A).
-    FastLED.setMaxPowerInVoltsAndMilliamps(5, 3000);
+    // Power budget for the strip's dedicated 5 V supply. FastLED scales down
+    // any frame that would exceed it, so effects can't brown the rail out.
+    FastLED.setMaxPowerInVoltsAndMilliamps(5, LED_MAX_MILLIAMPS);
     fill_solid(leds, LED_COUNT, CRGB::Black);
     FastLED.show();
 
@@ -926,6 +1212,7 @@ void loop() {
         g_requestStopFromDisconnect = false;
         flushEventQueue();       // discard any MIDI events queued before the drop
         allKeysOff();            // release outputs + clear every deferred timer
+        clearLedReactive();      // and drop any sustained LEDs
         Serial.println("[BLE] disconnect stop serviced on core 1");
     }
 
@@ -933,6 +1220,7 @@ void loop() {
     if (g_requestAllOff) {
         g_requestAllOff = false;
         allKeysOff();
+        clearLedReactive();      // held LEDs release on all-notes-off too
         Serial.println("[midi] all-notes-off serviced");
     }
 
@@ -954,6 +1242,38 @@ void loop() {
         if (e.on) dispatchNoteOn(e.note, e.velocity);
         else      dispatchNoteOff(e.note);
 
+        // Light the note's LED RIGHT HERE — the same place, same instant the
+        // solenoid fires — so the strip is perfectly in sync and never dropped
+        // by LVGL lock contention (the old bug: reactions lived inside the
+        // ui_lock block and vanished when the screen was busy).
+        if (g_ledsEnabled && appState.ledMode == LED_MODE_NOTE_REACTIVE) {
+            int idx = noteToLed(e.note);
+            int n   = ledUsable();          // stay within the keyed LEDs (dark tail)
+            int g   = appState.ledGlow;
+            if (e.on) {
+                CRGB col = reactiveColorFor(e.note, e.velocity);
+                // Peak brightness: full, or scaled by velocity if enabled.
+                uint8_t peak = appState.ledVelBright
+                               ? (uint8_t)map(e.velocity, 1, 127, 60, 255) : 255;
+                for (int d = -g; d <= g; d++) {       // center + glow neighbours
+                    int j = idx + d;
+                    if (j < 0 || j >= n) continue;
+                    // Linear falloff from the center; brighter note wins overlaps.
+                    uint8_t h = (g == 0) ? peak
+                                : (uint8_t)((int)peak * (g + 1 - abs(d)) / (g + 1));
+                    if (h > noteHeat[j]) { noteHeat[j] = h; noteColor[j] = col; }
+                    if (ledHeld[j] < 255) ledHeld[j]++;   // key down → sustain
+                }
+            } else {
+                for (int d = -g; d <= g; d++) {       // key up → allow it to fade
+                    int j = idx + d;
+                    if (j < 0 || j >= n) continue;
+                    if (ledHeld[j] > 0) ledHeld[j]--;
+                }
+            }
+            s_ledReactiveDirty = true;    // ask the loop to push a frame ASAP
+        }
+
         staged[staged_count++] = e;
     }
 
@@ -967,11 +1287,9 @@ void loop() {
                 appState.notesReceived++;
                 appState.lastNote = e.note;
                 appState.lastVelocity = e.velocity;
-                if (appState.ledMode == LED_MODE_NOTE_REACTIVE) {
-                    int idx = noteToLed(e.note);
-                    noteHeat[idx] = 255;
-                    noteHue[idx]  = map(e.note, MIDI_NOTE_MIN, MIDI_NOTE_MAX, 0, 240);
-                }
+                // (LED reaction now fires in the dispatch loop above, in sync
+                //  with the solenoid — not here, so it's never lost when the
+                //  screen is busy.)
                 ui_set_key(e.note, true);
                 ui_refresh_note(e.note, e.velocity);
             } else {
@@ -1040,8 +1358,15 @@ void loop() {
 
     static uint32_t lastFrame = 0;
     uint32_t now = millis();
-    if (now - lastFrame >= 33) {  // ~30 fps — 300 LEDs take ~9 ms to clock
-        lastFrame = now;          // out, so 50 fps would eat half the loop
+    // Normally cap LED output at ~30 fps (each show() clocks the strip out and
+    // competes with note dispatch). But when a note JUST lit an LED, push the
+    // frame as soon as ~12 ms have passed so the reaction feels instant instead
+    // of waiting up to 33 ms. A chord sets the flag once and one frame renders
+    // every lit note, so this can't storm show() during dense passages.
+    uint32_t frameGap = s_ledReactiveDirty ? 12 : 33;
+    if (now - lastFrame >= frameGap) {
+        lastFrame = now;
+        s_ledReactiveDirty = false;
         updateLeds();
     }
     // (auto-release + pending-fire ticks now run at the TOP of loop() so a
