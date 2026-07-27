@@ -34,6 +34,7 @@
 #include "ui.h"
 #include "power_boards.h"
 #include "settings.h"
+#include "pedal.h"
 
 // LVGL is not thread-safe. We render in a dedicated task on core 0 (away from
 // Arduino's loopTask on core 1) and protect every API call with this mutex.
@@ -341,6 +342,18 @@ static void handleNoteOff(byte channel, byte note, byte velocity) {
 // keep the release sequential with dispatch, off the BLE callback).
 static volatile bool g_requestAllOff = false;
 
+// --- Sustain-pedal (CC64) state -------------------------------------------
+// Written by handleControlChange on the NimBLE task (core 0), read by loop()
+// on core 1. Plain volatiles: each is a single byte/bool, and nothing here
+// drives hardware — a torn read at worst logs one stale value.
+// g_pedalSeen answers the practical question "does this song/app actually
+// send pedal data?" without needing any pedal hardware attached.
+static volatile uint8_t g_sustainRaw      = 0;      // last CC64 value, 0..127
+static volatile bool    g_sustainDown     = false;  // >=64 = pedal down
+static volatile bool    g_pedalEventDirty = false;  // a transition to log
+static volatile bool    g_pedalSeen       = false;  // any pedal CC ever seen
+static volatile uint32_t g_pedalCcCount   = 0;      // total pedal CCs received
+
 static void handleControlChange(byte channel, byte cc, byte value) {
 #if DEBUG_MIDI_PRINT
     Serial.printf("[midi] CC      ch=%u cc=%u val=%u\n", channel, cc, value);
@@ -351,6 +364,26 @@ static void handleControlChange(byte channel, byte cc, byte value) {
     // for the g_maxHoldMs watchdog on every held note.
     if (cc == 120 || cc == 121 || cc == 123) {
         g_requestAllOff = true;
+    }
+
+    // --- Piano pedals ------------------------------------------------------
+    // CC64 sustain/damper (the "everything rings and blends" pedal), CC66
+    // sostenuto, CC67 una corda/soft. Standard MIDI: <64 = up, >=64 = down;
+    // the raw 0..127 value also carries HALF-pedalling for actuators that can
+    // hold an intermediate position.
+    // Captured here on the NimBLE task (core 0) as plain volatiles; loop()
+    // on core 1 consumes them. No actuator is driven from this callback.
+    if (cc == 64 || cc == 66 || cc == 67) {
+        if (cc == 64) {
+            g_sustainRaw = value;
+            bool down = (value >= 64);
+            if (down != g_sustainDown) {
+                g_sustainDown = down;
+                g_pedalEventDirty = true;   // loop() logs the transition
+            }
+        }
+        g_pedalSeen = true;                 // proves this source sends pedal data
+        g_pedalCcCount++;
     }
 }
 
@@ -572,6 +605,11 @@ static void printHelp() {
         "    velbright 0|1            note brightness follows how hard you play\n"
         "    decay <1..40>            note fade speed (higher = shorter linger)\n"
         "    rainspeed <1..40>        rainbow-mode scroll speed\n"
+        "    pedalon 0|1              sustain-pedal servo (needs pedal board at 0x47)\n"
+        "    pedalup <80..600>        servo counts for pedal RELEASED\n"
+        "    pedaldown <80..600>      servo counts for pedal PRESSED\n"
+        "    pedalhalf 0|1            continuous half-pedalling from the CC64 value\n"
+        "    pedaltest <80..600>      drive the servo to a raw count (find endpoints)\n"
         "    dimsecs <0..3600>        screen idle-dim delay in seconds (0 = never dim)\n"
         "    waterfall 0|1            (removed — no-op, retained for back-compat)\n"
         "    fire <board> <ch> <pwm>  fire one channel (board 0..6, ch 0..15)\n"
@@ -611,6 +649,12 @@ static void printStatus() {
                       appState.noteDecayRate, appState.rainbowSpeed,
                       appState.ledTail, ledUsable());
     }
+    Serial.printf("  pedal: %s  sustain=%s (CC64=%u)  pedalCCs=%lu\n",
+                  g_pedalSeen ? "source SENDS pedal data"
+                              : "no pedal data seen yet from this source",
+                  g_sustainDown ? "DOWN" : "up", g_sustainRaw,
+                  (unsigned long)g_pedalCcCount);
+    pedal_print_status();
     Serial.printf("  i2cFails=%lu (rises during PWM-EMI storms; steady 0 is healthy)\n",
                   (unsigned long)g_i2cFailCount);
     Serial.println("  boards:");
@@ -639,6 +683,7 @@ static void handleLine(char *line) {
     } else if (!strcmp(line, "off")) {
         allKeysOff();
         clearLedReactive();
+        pedal_release();          // pedal up → dampers drop → ringing stops
         Serial.println("  all keys released (per-board + ALLCALL)");
     } else if (!strcmp(line, "broadcast")) {
         broadcastAllOff();
@@ -650,6 +695,7 @@ static void handleLine(char *line) {
         for (int i = 0; i < 5; ++i) { broadcastAllOff(); delay(40); }
         allKeysOff();
         clearLedReactive();
+        pedal_release();          // dampers down — stop the ringing too
         g_fullPowerMode = true;
         Serial.println("  PANIC: all solenoids released, Full Power forced ON");
     } else if (!strcmp(line, "snappy")) {
@@ -908,6 +954,37 @@ static void handleLine(char *line) {
         if (v < 1 || v > 40) { Serial.println("  rainspeed out of range (1..40)"); return; }
         appState.rainbowSpeed = (uint8_t)v;
         Serial.printf("  rainbow speed = %d\n", v);
+    } else if (!strncmp(line, "pedalon ", 8)) {
+        int v = atoi(line + 8);
+        g_pedalEnabled = (v != 0);
+        if (g_pedalEnabled) pedal_init(); else pedal_release();
+        Serial.printf("  sustain pedal = %s\n", g_pedalEnabled ? "ENABLED" : "disabled");
+    } else if (!strncmp(line, "pedalup ", 8)) {
+        int v = atoi(line + 8);
+        if (v < 80 || v > 600) { Serial.println("  pedalup out of range (80..600 counts)"); return; }
+        g_pedalUpCounts = (uint16_t)v;
+        pedal_release();                    // move to the new UP position now
+        Serial.printf("  pedal UP = %d counts (~%.2f ms pulse)\n", v, v * 20.0 / 4096.0);
+    } else if (!strncmp(line, "pedaldown ", 10)) {
+        int v = atoi(line + 10);
+        if (v < 80 || v > 600) { Serial.println("  pedaldown out of range (80..600 counts)"); return; }
+        g_pedalDownCounts = (uint16_t)v;
+        Serial.printf("  pedal DOWN = %d counts (~%.2f ms pulse)\n", v, v * 20.0 / 4096.0);
+    } else if (!strncmp(line, "pedalhalf ", 10)) {
+        int v = atoi(line + 10);
+        g_pedalHalf = (v != 0);
+        Serial.printf("  half-pedalling = %s\n", g_pedalHalf
+                      ? "ON (CC64 value maps continuously)"
+                      : "off (CC64 <64 = up, >=64 = down)");
+    } else if (!strncmp(line, "pedaltest ", 10)) {
+        // Drive the servo to a raw count so you can find the endpoints safely.
+        int v = atoi(line + 10);
+        if (v < 80 || v > 600) { Serial.println("  pedaltest out of range (80..600)"); return; }
+        if (!g_pedalEnabled) { Serial.println("  enable it first: pedalon 1"); return; }
+        pedal_test_counts((uint16_t)v);
+        Serial.printf("  pedal servo -> %d counts (~%.2f ms). Creep up on the limits — "
+                      "a stalled servo cooks itself.\n", v, v * 20.0 / 4096.0);
+    } else if (!strncmp(line, "fire ", 5)) {
         int b, c, p;
         if (sscanf(line + 5, "%d %d %d", &b, &c, &p) != 3) {
             Serial.println("  usage: fire <board> <channel> <pwm>"); return;
@@ -1127,6 +1204,7 @@ void setup() {
 #endif
 
     initPowerBoards();
+    pedal_init();          // optional sustain-pedal servo (its own PCA9685)
     // Scan runs after ui_init() below so the result can also be mirrored on
     // the AMOLED via the I2C status label.
 
@@ -1160,6 +1238,20 @@ void setup() {
 
     BLEMIDI.setHandleConnected(onBleConnected);
     BLEMIDI.setHandleDisconnected(onBleDisconnected);
+
+    // Fast advertising for quick auto-reconnect. Intervals are in 0.625 ms
+    // units, so 32..64 = 20..40 ms — the BLE "fast connect" window Apple
+    // devices scan for. The default is several times slower, which is what
+    // makes a re-pair feel like it hangs. Cheap: we only advertise while
+    // disconnected, so there's no ongoing cost once the iPad is on.
+    {
+        NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+        if (adv) {
+            adv->setMinInterval(32);   // 20 ms
+            adv->setMaxInterval(64);   // 40 ms
+            adv->start();
+        }
+    }
 
     ui_init();
     ui_refresh_status();
@@ -1213,14 +1305,27 @@ void loop() {
         flushEventQueue();       // discard any MIDI events queued before the drop
         allKeysOff();            // release outputs + clear every deferred timer
         clearLedReactive();      // and drop any sustained LEDs
+        pedal_release();         // lift the pedal or the piano rings on
         Serial.println("[BLE] disconnect stop serviced on core 1");
     }
 
     // Service a MIDI All-Notes-Off / panic (CC 120/121/123) the same way.
+    // Log sustain-pedal transitions from core 1 (never from the BLE callback).
+    // This is the "do my MIDI files have pedal?" probe: play a song and watch
+    // for these lines. Guarded print so a headless install can't block here.
+    if (g_pedalEventDirty) {
+        g_pedalEventDirty = false;
+        if (Serial.availableForWrite() >= 64) {
+            Serial.printf("[pedal] sustain %s (CC64=%u)\n",
+                          g_sustainDown ? "DOWN" : "up", g_sustainRaw);
+        }
+    }
+
     if (g_requestAllOff) {
         g_requestAllOff = false;
         allKeysOff();
         clearLedReactive();      // held LEDs release on all-notes-off too
+        pedal_release();         // CC120/121/123 releases the pedal as well
         Serial.println("[midi] all-notes-off serviced");
     }
 
@@ -1369,6 +1474,11 @@ void loop() {
         s_ledReactiveDirty = false;
         updateLeds();
     }
+
+    // Sustain pedal: apply the latest CC64 here on the dispatch core (never
+    // from the BLE callback). Change-gated + rate-limited inside, and a no-op
+    // when no pedal board is installed.
+    pedal_tick(g_sustainRaw);
     // (auto-release + pending-fire ticks now run at the TOP of loop() so a
     // note flood can never delay the safety net — see lastSafetyTick above.)
 

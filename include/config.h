@@ -109,6 +109,22 @@ extern bool g_ledsEnabled;
 #define IDLE_DIM_FLOOR         10
 extern uint32_t g_idleDimSecs;
 
+// --- Sustain pedal (servo on its own PCA9685) ------------------------------
+// A DEDICATED PCA9685 on the same opto-isolated trunk, at an address outside
+// the 0x40-0x46 power-board block, running at the 50 Hz servo rate. It must be
+// a separate chip: PCA9685 PWM frequency is per-chip and the solenoid boards
+// run at ~1111 Hz. Optional hardware — absent = every pedal call is a no-op.
+#define PEDAL_PCA_ADDR      0x47
+#define PEDAL_PCA_CHANNEL   0
+#define PEDAL_SERVO_HZ      50
+// Servo pulse widths as PCA9685 counts at 50 Hz (20 ms / 4096 ≈ 4.88 µs each):
+//   1.0 ms ≈ 205,  1.5 ms ≈ 307,  2.0 ms ≈ 410. Tune to your linkage with
+//   `pedalup` / `pedaldown` — WATCH THE SERVO doesn't stall against the stop.
+#define DEFAULT_PEDAL_ENABLED  0     // off until the pedal is physically wired
+#define DEFAULT_PEDAL_UP       205   // ~1.0 ms — pedal released
+#define DEFAULT_PEDAL_DOWN     410   // ~2.0 ms — pedal pressed
+#define DEFAULT_PEDAL_HALF     0     // 1 = continuous half-pedalling
+
 #define ONEWIRE_PIN      21   // DS18B20 trunk (chained across power boards)
 
 #define I2C_FREQ_HZ      400000  // 400 kHz. If an opto-isolator on the new

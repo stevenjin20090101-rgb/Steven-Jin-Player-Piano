@@ -10,6 +10,7 @@
 #include "config.h"
 #include "power_boards.h"
 #include "ui.h"
+#include "pedal.h"
 
 #include <Preferences.h>
 #include <esp_system.h>   // esp_reset_reason()
@@ -51,6 +52,10 @@ void settings_load() {
     g_ledsEnabled       = p.getBool("leds",     DEFAULT_LEDS_ENABLED != 0);
     g_restrikeMs        = p.getUInt("restrike", DEFAULT_RESTRIKE_MS);
     g_idleDimSecs       = p.getUInt("dimSecs",  DEFAULT_IDLE_DIM_SECS);
+    g_pedalEnabled      = p.getBool  ("pedalOn",   DEFAULT_PEDAL_ENABLED != 0);
+    g_pedalUpCounts     = p.getUShort("pedalUp",   DEFAULT_PEDAL_UP);
+    g_pedalDownCounts   = p.getUShort("pedalDn",   DEFAULT_PEDAL_DOWN);
+    g_pedalHalf         = p.getBool  ("pedalHalf", DEFAULT_PEDAL_HALF != 0);
 
     appState.ledCount           = p.getUShort("ledCount",  DEFAULT_LED_ACTIVE);
     appState.ledOffset          = p.getShort ("ledOffset", DEFAULT_LED_OFFSET);
@@ -109,6 +114,10 @@ void settings_save() {
     p.putBool  ("leds",      g_ledsEnabled);
     p.putUInt  ("restrike",  g_restrikeMs);
     p.putUInt  ("dimSecs",   g_idleDimSecs);
+    p.putBool  ("pedalOn",   g_pedalEnabled);
+    p.putUShort("pedalUp",   g_pedalUpCounts);
+    p.putUShort("pedalDn",   g_pedalDownCounts);
+    p.putBool  ("pedalHalf", g_pedalHalf);
 
     p.putUShort("ledCount",  appState.ledCount);
     p.putShort ("ledOffset", appState.ledOffset);
@@ -145,10 +154,11 @@ void settings_save() {
 struct SettingsSnap {
     uint32_t sweepPWM, minPWM, maxPWM, holdMs, retGapMs, minStrike, relMs,
              restrike, dimSecs, ledColor, isoStrike, isoGap;
-    uint16_t pwmFreq, relPwm, ledCount, ledScale;
+    uint16_t pwmFreq, relPwm, ledCount, ledScale, pedalUp, pedalDn;
     int16_t  ledOffset;
     float    velmult;
-    bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri;
+    bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri,
+             pedalOn, pedalHalf;
     uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail;
     float    keyForce[128];
 };
@@ -177,6 +187,8 @@ static void takeSnap(SettingsSnap &s) {
     s.ledReverse = appState.ledReverse; s.reactPal = appState.ledReactivePalette;
     s.ledGlow = appState.ledGlow; s.ledVelBri = appState.ledVelBright;
     s.ledTail = appState.ledTail;
+    s.pedalOn = g_pedalEnabled; s.pedalUp = g_pedalUpCounts;
+    s.pedalDn = g_pedalDownCounts; s.pedalHalf = g_pedalHalf;
     memcpy(s.keyForce, g_keyForceMult, sizeof(s.keyForce));
 }
 
