@@ -227,6 +227,9 @@ extern uint32_t g_idleDimSecs;
 // faster than the plunger can move and produce no sound at all.
 // Set 0 to disable. Tune live via the "minstrike <ms>" serial command.
 #define DEFAULT_MIN_STRIKE_MS  60
+// Master volume 0..100. 100 = full range as set by min/max. Lower values scale
+// every strike down toward the audibility floor (never to silence).
+#define DEFAULT_MASTER_VOLUME  100
 // Isolated-note strike boost: a lone short note (after > DEFAULT_ISO_GAP_MS of
 // silence) is stretched to at least DEFAULT_ISO_STRIKE_MS so it's clearly
 // audible; notes inside a run keep the shorter DEFAULT_MIN_STRIKE_MS.

@@ -605,6 +605,8 @@ static void printHelp() {
         "    velbright 0|1            note brightness follows how hard you play\n"
         "    decay <1..40>            note fade speed (higher = shorter linger)\n"
         "    rainspeed <1..40>        rainbow-mode scroll speed\n"
+        "    volume <0..100>          MASTER VOLUME - lower = softer whole piano\n"
+        "    soft                     one-tap quiet preset (fullpower off + volume) + save\n"
         "    pedalon 0|1              sustain-pedal servo (needs pedal board at 0x47)\n"
         "    pedalup <80..600>        servo counts for pedal RELEASED\n"
         "    pedaldown <80..600>      servo counts for pedal PRESSED\n"
@@ -624,6 +626,9 @@ static void printStatus() {
     Serial.printf("  isostrike=%lu ms (lone-note boost)  isogap=%lu ms  %s\n",
                   (unsigned long)g_isoStrikeMs, (unsigned long)g_isoGapMs,
                   (g_isoStrikeMs > g_minStrikeMs && g_isoGapMs > 0) ? "[active]" : "[off]");
+    Serial.printf("  volume=%u%%  %s\n", g_masterVolume,
+                  g_fullPowerMode ? "(FULL POWER ON - every note max force, volume has no effect)"
+                                  : "(velocity dynamics active)");
     Serial.printf("  freq=%u Hz   fullpower=%s   gap=%lu ms   minstrike=%lu ms\n",
                   g_pwmFreqHz, g_fullPowerMode ? "ON" : "OFF",
                   (unsigned long)g_minRetriggerGapMs,
@@ -954,6 +959,22 @@ static void handleLine(char *line) {
         if (v < 1 || v > 40) { Serial.println("  rainspeed out of range (1..40)"); return; }
         appState.rainbowSpeed = (uint8_t)v;
         Serial.printf("  rainbow speed = %d\n", v);
+    } else if (!strncmp(line, "volume ", 7)) {
+        int v = atoi(line + 7);
+        if (v < 0 || v > 100) { Serial.println("  volume out of range (0..100)"); return; }
+        set_master_volume((uint8_t)v);
+        Serial.printf("  volume = %d%% (100 = full range; lower = softer overall)\n", v);
+    } else if (!strcmp(line, "soft")) {
+        // One-tap quiet preset. Full Power OFF is the big one — it forces every
+        // note to maximum force, so nothing else can make the piano soft while
+        // it's on. Then drop the volume and the velocity floor.
+        g_fullPowerMode = false;
+        set_master_volume(55);
+        g_softRelease = true;            // cushion the release, no backstop clank
+        settings_save();
+        Serial.printf("  SOFT preset: fullpower OFF, volume 55%%, soft-release ON.\n"
+                      "  Still too loud? 'volume 35'. Notes dropping out? raise 'min' "
+                      "(now %u) until the quietest ones sound again.\n", g_minStrikePWM);
     } else if (!strncmp(line, "pedalon ", 8)) {
         int v = atoi(line + 8);
         g_pedalEnabled = (v != 0);

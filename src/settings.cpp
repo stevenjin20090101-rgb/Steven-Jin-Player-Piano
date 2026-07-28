@@ -44,6 +44,7 @@ void settings_load() {
     g_minStrikeMs       = p.getUInt("minStrike", DEFAULT_MIN_STRIKE_MS);
     g_isoStrikeMs       = p.getUInt("isoStrike", DEFAULT_ISO_STRIKE_MS);
     g_isoGapMs          = p.getUInt("isoGap",    DEFAULT_ISO_GAP_MS);
+    set_master_volume(p.getUChar("volume", DEFAULT_MASTER_VOLUME));
     g_waterfallEnabled  = p.getBool("waterfall", DEFAULT_WATERFALL_ENABLED != 0);
     g_keyboardVizEnabled = p.getBool("keyviz", true);
     g_softRelease       = p.getBool("softRel",  DEFAULT_SOFT_RELEASE != 0);
@@ -106,6 +107,7 @@ void settings_save() {
     p.putUInt  ("minStrike", g_minStrikeMs);
     p.putUInt  ("isoStrike", g_isoStrikeMs);
     p.putUInt  ("isoGap",    g_isoGapMs);
+    p.putUChar ("volume",    g_masterVolume);
     p.putBool  ("waterfall", g_waterfallEnabled);
     p.putBool  ("keyviz",    g_keyboardVizEnabled);
     p.putBool  ("softRel",   g_softRelease);
@@ -159,7 +161,7 @@ struct SettingsSnap {
     float    velmult;
     bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri,
              pedalOn, pedalHalf;
-    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail;
+    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume;
     float    keyForce[128];
 };
 static SettingsSnap s_snap;
@@ -187,6 +189,7 @@ static void takeSnap(SettingsSnap &s) {
     s.ledReverse = appState.ledReverse; s.reactPal = appState.ledReactivePalette;
     s.ledGlow = appState.ledGlow; s.ledVelBri = appState.ledVelBright;
     s.ledTail = appState.ledTail;
+    s.volume = g_masterVolume;
     s.pedalOn = g_pedalEnabled; s.pedalUp = g_pedalUpCounts;
     s.pedalDn = g_pedalDownCounts; s.pedalHalf = g_pedalHalf;
     memcpy(s.keyForce, g_keyForceMult, sizeof(s.keyForce));

@@ -108,6 +108,7 @@ static KeyTiming s_keyTiming[128] = {};
 
 uint32_t g_minRetriggerGapMs = DEFAULT_MIN_RETRIGGER_GAP_MS;
 uint32_t g_minStrikeMs       = DEFAULT_MIN_STRIKE_MS;
+uint8_t  g_masterVolume      = DEFAULT_MASTER_VOLUME;
 uint32_t g_isoStrikeMs       = DEFAULT_ISO_STRIKE_MS;
 uint32_t g_isoGapMs          = DEFAULT_ISO_GAP_MS;
 // millis() of the last actual strike on ANY key — the density gauge used to
@@ -153,6 +154,20 @@ void initPowerBoards() {
 // Push a new PWM frequency to every connected board. Persists in
 // g_pwmFreqHz so subsequent calls (e.g. via "freq" serial command)
 // use the new value.
+// Master volume, 0..100. Anything below 100 needs the velocity/PWM path, so
+// this turns Full Power OFF — "every note at max force" and "play softer" are
+// mutually exclusive. Going back to 100 does NOT re-enable Full Power; that
+// stays the user's explicit choice.
+void set_master_volume(uint8_t vol) {
+    if (vol > 100) vol = 100;
+    g_masterVolume = vol;
+    if (vol < 100 && g_fullPowerMode) {
+        g_fullPowerMode = false;
+        Serial.println("[vol] Full Power turned OFF — required for soft playing "
+                       "(it forces every note to max force)");
+    }
+}
+
 void setAllBoardsPWMFreq(uint16_t hz) {
     if (hz < 24)   hz = 24;
     if (hz > 1526) hz = 1526;
@@ -235,6 +250,24 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
             // constant DC and defeats the anti-EMI reason PWM mode exists). A
             // keyforce>1.0 must stay clamped to the 4095 PWM ceiling.
             pwm = (scaled > 4095) ? 4095 : scaled;
+        }
+    }
+
+    // --- Master volume ------------------------------------------------------
+    // One knob for "play the whole piano softer". Scales the strike force DOWN
+    // toward the audibility floor, so quieter never means silent: a solenoid
+    // has a hard minimum pull below which the hammer never reaches the string.
+    //
+    // Volume is meaningless in Full-Power mode (that IS maximum force by
+    // definition), so set_master_volume() turns Full Power off when you go
+    // below 100 — the two are physically contradictory.
+    if (g_masterVolume < 100 && !g_fullPowerMode) {
+        uint32_t floorPwm = g_minStrikePWM;
+        // Keep a little headroom under the floor so 0% is quiet but still
+        // strikes; going fully to 0 would just produce silent, dead keys.
+        uint32_t softFloor = (floorPwm * 82) / 100;
+        if (pwm > softFloor) {
+            pwm = softFloor + ((pwm - softFloor) * g_masterVolume) / 100;
         }
     }
 

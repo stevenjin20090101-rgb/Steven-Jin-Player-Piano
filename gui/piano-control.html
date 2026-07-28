@@ -174,13 +174,20 @@
     <div class="btn-row">
       <button id="preset-cinematic">🎬 Cinematic</button>
       <button class="ghost" id="preset-snappy">⚡ Snappy</button>
+      <button class="ghost" id="preset-soft">🔉 Soft</button>
     </div>
-    <div class="hint"><b>Cinematic</b> — velocity dynamics + soft release, reactive LEDs (for subtle Zimmer/Interstellar-style playing). <b>Snappy</b> — max force, lowest latency, LEDs off (for fast, dense songs).</div>
+    <div class="hint"><b>Soft</b> — quiet preset: full power off, volume 55%, soft release. <b>Cinematic</b> — velocity dynamics + soft release, reactive LEDs (for subtle Zimmer/Interstellar-style playing). <b>Snappy</b> — max force, lowest latency, LEDs off (for fast, dense songs).</div>
   </div>
 
   <!-- PWM tuning -->
   <div class="card">
     <h2>PWM &amp; force</h2>
+    <label class="full">
+      <div class="label-line"><span class="name">🔊 Master volume <small>(lower = softer whole piano)</small></span>
+        <span class="value" id="volume-val">100%</span></div>
+      <input type="range" id="volume" min="0" max="100" value="100">
+    </label>
+    <div class="hint">Full power must be OFF for this to do anything — it forces every note to maximum force. Setting volume below 100 turns it off automatically.</div>
     <label class="full">
       <div class="label-line"><span class="name">Min strike PWM <small>(velocity 1)</small></span>
         <span class="value" id="min-val">1500</span></div>
@@ -636,6 +643,7 @@ const fmtLabel = {
   releasepwm: v => v,
   releasems:  v => v + " ms",
   freq:       v => v + " Hz",
+  volume:     v => v + "%",
   velmult:    v => (v/100).toFixed(2) + "×",
   keyforce:   v => (v/100).toFixed(2) + "×",
   ledbright:  v => Math.round(v*100/255) + "%",
@@ -662,6 +670,7 @@ const cmdFor = {
   releasepwm: v => `releasepwm ${v}`,
   releasems:  v => `releasems ${v}`,
   freq:       v => `freq ${v}`,
+  volume:     v => `volume ${v}`,
   velmult:    v => `velmult ${(v/100).toFixed(2)}`,
   ledbright:  v => `ledbright ${v}`,
   ledcount:   v => `ledcount ${v}`,
@@ -732,6 +741,11 @@ $("preset-cinematic").addEventListener("click", () => {
 });
 $("preset-snappy").addEventListener("click", () => {
   sendCmd("snappy"); setTimeout(() => sendCmd("status"), 300);
+});
+$("preset-soft").addEventListener("click", () => {
+  sendCmd("soft");
+  setSwitch("fullpower", false);      // the preset turns it off firmware-side
+  setTimeout(() => sendCmd("status"), 300);
 });
 
 // Velocity → brightness toggle

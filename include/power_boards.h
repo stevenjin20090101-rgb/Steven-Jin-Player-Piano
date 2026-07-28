@@ -91,6 +91,12 @@ extern uint32_t g_minStrikeMs;
 extern uint32_t g_isoStrikeMs;
 extern uint32_t g_isoGapMs;
 
+// Master volume 0..100 — scales strike force down toward the audibility floor
+// so the whole piano plays softer without touching min/max/velmult. Set it via
+// set_master_volume(), which also turns Full Power off (see the .cpp).
+extern uint8_t g_masterVolume;
+void set_master_volume(uint8_t vol);
+
 // Auto re-strike (tremolo sustain). While a note is held, re-hit it every
 // g_restrikeMs (0 = off) so long notes stay audible instead of striking
 // once and decaying. g_restrikeLiftMs is the key-lift gap between hits.
