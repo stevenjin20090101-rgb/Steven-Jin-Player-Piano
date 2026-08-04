@@ -149,6 +149,15 @@ pio device monitor      # serial console @115200 (type 'help')
 └── platformio.ini        build config (LilyGo T4-S3)
 ```
 
+## Pedal node (in design)
+
+A sustain-pedal actuator is being added: MIDI CC64 drives a closed-loop stepper
+that presses the piano's damper pedal, so pedalled passages ring and blend.
+Firmware support is already in (`src/pedal.cpp`); the hardware is optional and
+absent = no-op. See [`docs/PEDAL_NODE_PCB.md`](docs/PEDAL_NODE_PCB.md) for the
+board specification — RJ45 + XT60 daisy chain, power chain, and the grounding
+rules that keep stepper current out of the I²C reference.
+
 ## Authorship & license
 
 **Made by Steven Jin** — firmware, LED engine, control software, and integration.
