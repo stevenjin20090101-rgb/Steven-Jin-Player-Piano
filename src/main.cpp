@@ -609,6 +609,8 @@ static void printHelp() {
         "    rainspeed <1..40>        rainbow-mode scroll speed\n"
         "    volume <0..100>          MASTER VOLUME - lower = softer whole piano\n"
         "    soft                     one-tap quiet preset (fullpower off + volume) + save\n"
+        "    testmin [midi]           play that key at its group FLOOR (default C4)\n"
+        "    testmax [midi]           play that key at MAX force\n"
         "    minwhite <0..4095>       strike floor for WHITE keys\n"
         "    minblack <0..4095>       strike floor for BLACK keys (0 = same as white)\n"
         "    ramp <midi> [f] [t] [s]  step one key up in force to FIND its floor by ear\n"
@@ -1009,6 +1011,35 @@ static void handleLine(char *line) {
         g_minStrikePWMBlack = (uint16_t)v;
         Serial.printf("  black-key floor = %d%s\n", v,
                       v == 0 ? " (0 = follow the white floor)" : "");
+    } else if (!strncmp(line, "testmin", 7) || !strncmp(line, "testmax", 7)) {
+        // Fire ONE key at exactly its group's floor (or the ceiling) so you can
+        // hear whether that setting is right. The floor is the number that
+        // decides how soft the piano can play: too low and the note vanishes,
+        // too high and all the quiet dynamics are squashed away.
+        bool wantMax = (line[4] == 'a');            // testmAx vs testmIn
+        int note = 60;
+        const char *arg = strchr(line, ' ');
+        if (arg) note = atoi(arg + 1);
+        if (note < 0 || note > 127) { Serial.println("  usage: testmin|testmax [midi]"); return; }
+        bool black = note_is_black((uint8_t)note);
+        uint16_t lo = (black && g_minStrikePWMBlack > 0) ? g_minStrikePWMBlack
+                                                         : g_minStrikePWM;
+        uint16_t pwm = wantMax ? g_maxStrikePWM : lo;
+        Serial.printf("  %s on %s (%s key) at pwm=%u  [%s]\n",
+                      wantMax ? "MAX" : "MIN", noteNameC((uint8_t)note),
+                      black ? "BLACK" : "white", pwm,
+                      wantMax ? "should be the loudest this key gets"
+                              : "should be the QUIETEST that still reliably sounds");
+        if (!manualFireNote((uint8_t)note, pwm)) {
+            Serial.println("  no board for that note (is the trunk connected?)");
+            return;
+        }
+        delay(150);
+        manualFireNote((uint8_t)note, 0);
+        if (!wantMax) {
+            Serial.printf("  silent or weak? raise it:  %s %u\n",
+                          black ? "minblack" : "minwhite", (unsigned)(lo + 100));
+        }
     } else if (!strncmp(line, "ramp ", 5)) {
         // Threshold finder. Strikes ONE key repeatedly, stepping the force up,
         // printing each level. Listen for the first level that reliably sounds

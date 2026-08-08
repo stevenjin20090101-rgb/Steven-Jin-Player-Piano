@@ -179,6 +179,31 @@
     <div class="hint"><b>Soft</b> — quiet preset: full power off, volume 55%, soft release. <b>Cinematic</b> — velocity dynamics + soft release, reactive LEDs (for subtle Zimmer/Interstellar-style playing). <b>Snappy</b> — max force, lowest latency, LEDs off (for fast, dense songs).</div>
   </div>
 
+  <!-- Strike floors -->
+  <div class="card">
+    <h2>Strike floors <small style="text-transform:none;letter-spacing:0">(how soft it can play)</small></h2>
+    <div class="hint">The floor is the quietest force that still reliably sounds. Too low and notes vanish; too high and all the soft dynamics are squashed. Black keys need more force than white ones.</div>
+    <label class="full">
+      <div class="label-line"><span class="name">White key floor</span>
+        <span class="value" id="minwhite-val">2400</span></div>
+      <input type="range" id="minwhite" min="0" max="4095" value="2400">
+    </label>
+    <div class="btn-row">
+      <button id="test-min-white">▶ Test MIN white</button>
+      <button class="ghost" id="test-max-white">Test MAX white</button>
+    </div>
+    <label class="full">
+      <div class="label-line"><span class="name">Black key floor <small>(0 = same as white)</small></span>
+        <span class="value" id="minblack-val">same as white</span></div>
+      <input type="range" id="minblack" min="0" max="4095" value="0">
+    </label>
+    <div class="btn-row">
+      <button id="test-min-black">▶ Test MIN black</button>
+      <button class="ghost" id="test-max-black">Test MAX black</button>
+    </div>
+    <div class="hint">Lower each floor until the note stops sounding, then raise it back until every key speaks. That lowest reliable value gives the widest dynamics.</div>
+  </div>
+
   <!-- PWM tuning -->
   <div class="card">
     <h2>PWM &amp; force</h2>
@@ -646,6 +671,8 @@ const fmtLabel = {
   volume:     v => v + "%",
   velmult:    v => (v/100).toFixed(2) + "×",
   keyforce:   v => (v/100).toFixed(2) + "×",
+  minwhite:   v => v,
+  minblack:   v => (v==0 ? "same as white" : v),
   ledbright:  v => Math.round(v*100/255) + "%",
   ledcount:   v => v + " LEDs",
   ledoffset:  v => (v>0?"+":"") + v,
@@ -672,6 +699,8 @@ const cmdFor = {
   freq:       v => `freq ${v}`,
   volume:     v => `volume ${v}`,
   velmult:    v => `velmult ${(v/100).toFixed(2)}`,
+  minwhite:   v => `minwhite ${v}`,
+  minblack:   v => `minblack ${v}`,
   ledbright:  v => `ledbright ${v}`,
   ledcount:   v => `ledcount ${v}`,
   ledoffset:  v => `ledoffset ${v}`,
@@ -780,6 +809,10 @@ $("panic-btn").addEventListener("click", () => {
   setSwitch("fullpower", true);
 });
 $("sweep-btn").addEventListener("click",     () => sendCmd("sweep"));
+$("test-min-white").addEventListener("click", () => sendCmd("testmin 60"));
+$("test-max-white").addEventListener("click", () => sendCmd("testmax 60"));
+$("test-min-black").addEventListener("click", () => sendCmd("testmin 61"));
+$("test-max-black").addEventListener("click", () => sendCmd("testmax 61"));
 $("clear-log").addEventListener("click",     () => { $("log").innerHTML = ""; });
 
 // --- Test note ---------------------------------------------------------------
