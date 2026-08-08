@@ -50,6 +50,8 @@ void settings_load() {
     g_humanizeMs        = p.getUChar("humanMs",   DEFAULT_HUMANIZE_MS);
     g_minStrikePWMBlack = p.getUShort("minPWMBlk", DEFAULT_MIN_PWM_BLACK);
     g_idleDimFloor      = p.getUChar ("dimFloor",  IDLE_DIM_FLOOR);
+    g_burstGapMs        = p.getUInt  ("burstGap",  DEFAULT_BURST_GAP_MS);
+    g_burstBoostPct     = p.getUChar ("burstBoost", DEFAULT_BURST_BOOST);
     g_waterfallEnabled  = p.getBool("waterfall", DEFAULT_WATERFALL_ENABLED != 0);
     g_keyboardVizEnabled = p.getBool("keyviz", true);
     g_softRelease       = p.getBool("softRel",  DEFAULT_SOFT_RELEASE != 0);
@@ -118,6 +120,8 @@ void settings_save() {
     p.putUChar ("humanMs",   g_humanizeMs);
     p.putUShort("minPWMBlk", g_minStrikePWMBlack);
     p.putUChar ("dimFloor",  g_idleDimFloor);
+    p.putUInt  ("burstGap",  g_burstGapMs);
+    p.putUChar ("burstBoost", g_burstBoostPct);
     p.putBool  ("waterfall", g_waterfallEnabled);
     p.putBool  ("keyviz",    g_keyboardVizEnabled);
     p.putBool  ("softRel",   g_softRelease);
@@ -165,13 +169,13 @@ void settings_save() {
 // It also avoids the rare multi-10ms flash-compaction stall mid-song.)
 struct SettingsSnap {
     uint32_t sweepPWM, minPWM, maxPWM, holdMs, retGapMs, minStrike, relMs,
-             restrike, dimSecs, ledColor, isoStrike, isoGap;
+             restrike, dimSecs, ledColor, isoStrike, isoGap, burstGap;
     uint16_t pwmFreq, relPwm, ledCount, ledScale, pedalUp, pedalDn, minPWMBlk;
     int16_t  ledOffset;
     float    velmult, velCurve;
     bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri,
              pedalOn, pedalHalf;
-    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs, dimFloor;
+    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs, dimFloor, burstBoost;
     float    keyForce[128];
 };
 static SettingsSnap s_snap;
@@ -201,6 +205,7 @@ static void takeSnap(SettingsSnap &s) {
     s.ledTail = appState.ledTail;
     s.volume = g_masterVolume; s.velCurve = g_velCurve;
     s.minPWMBlk = g_minStrikePWMBlack; s.dimFloor = g_idleDimFloor;
+    s.burstGap = g_burstGapMs; s.burstBoost = g_burstBoostPct;
     s.humanVel = g_humanizeVel; s.humanMs = g_humanizeMs;
     s.pedalOn = g_pedalEnabled; s.pedalUp = g_pedalUpCounts;
     s.pedalDn = g_pedalDownCounts; s.pedalHalf = g_pedalHalf;

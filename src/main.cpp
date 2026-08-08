@@ -609,6 +609,9 @@ static void printHelp() {
         "    rainspeed <1..40>        rainbow-mode scroll speed\n"
         "    volume <0..100>          MASTER VOLUME - lower = softer whole piano\n"
         "    soft                     one-tap quiet preset (fullpower off + volume) + save\n"
+        "    blereset                 clear stored BLE bonds (fixes \"must forget device\")\n"
+        "    burstboost <0..100>      %% toward max force for fast notes (short-note physics)\n"
+        "    burstgap <0..600>        gap under which notes count as a burst\n"
         "    testmin [midi]           play that key at its group FLOOR (default C4)\n"
         "    testmax [midi]           play that key at MAX force\n"
         "    minwhite <0..4095>       strike floor for WHITE keys\n"
@@ -645,6 +648,8 @@ static void printStatus() {
                   g_minStrikePWM, g_minStrikePWMBlack,
                   g_minStrikePWMBlack == 0 ? " (follows white)" : "",
                   g_idleDimFloor, g_idleDimFloor == 0 ? " (fully dark)" : "");
+    Serial.printf("  burst: boost=%u%% under %lums gap (short notes need more force)\n",
+                  g_burstBoostPct, (unsigned long)g_burstGapMs);
     Serial.printf("  expression: velcurve=%.2f humanvel=%u humantime=%ums | "
                       "dynamic span=%u/4095 (%u%%)%s\n",
                       g_velCurve, g_humanizeVel, g_humanizeMs, span,
@@ -1011,6 +1016,23 @@ static void handleLine(char *line) {
         g_minStrikePWMBlack = (uint16_t)v;
         Serial.printf("  black-key floor = %d%s\n", v,
                       v == 0 ? " (0 = follow the white floor)" : "");
+    } else if (!strcmp(line, "blereset")) {
+        int n = NimBLEDevice::getNumBonds();
+        NimBLEDevice::deleteAllBonds();
+        Serial.printf("  cleared %d stored BLE bond(s)\n", n);
+        Serial.println("  bonding is disabled, so none should accumulate. If the iPad still");
+        Serial.println("  refuses to connect, do 'Forget This Device' there ONCE — the stale");
+        Serial.println("  key is on its side — then pair again. It should not recur.");
+    } else if (!strncmp(line, "burstboost ", 11)) {
+        int v = atoi(line + 11);
+        if (v < 0 || v > 100) { Serial.println("  burstboost out of range (0..100 %)"); return; }
+        g_burstBoostPct = (uint8_t)v;
+        Serial.printf("  burstboost = %d%% — fast notes pushed this far toward max force\n", v);
+    } else if (!strncmp(line, "burstgap ", 9)) {
+        int v = atoi(line + 9);
+        if (v < 0 || v > 600) { Serial.println("  burstgap out of range (0..600 ms)"); return; }
+        g_burstGapMs = (uint32_t)v;
+        Serial.printf("  burstgap = %d ms — notes closer than this count as a burst\n", v);
     } else if (!strncmp(line, "testmin", 7) || !strncmp(line, "testmax", 7)) {
         // Fire ONE key at exactly its group's floor (or the ceiling) so you can
         // hear whether that setting is right. The floor is the number that
@@ -1392,6 +1414,26 @@ void setup() {
 
     BLEMIDI.setHandleConnected(onBleConnected);
     BLEMIDI.setHandleDisconnected(onBleDisconnected);
+
+    // BLE MIDI does NOT need bonding, and bonding is precisely what causes the
+    // "have to Forget This Device on the iPad before it will reconnect" fault:
+    // the stored pairing keys on the two sides drift out of sync (a re-flash, a
+    // full bond table, an NVS wipe) and iOS then refuses to reconnect using
+    // keys the peripheral no longer honours. Standard BLE MIDI interfaces
+    // connect unauthenticated, so turn bonding off entirely — with no keys
+    // stored there is nothing left to go stale, and the iPad can reconnect
+    // freely the way it does with any other MIDI interface.
+    NimBLEDevice::setSecurityAuth(false, false, false);   // no bond, no MITM, no SC
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+    {
+        int stale = NimBLEDevice::getNumBonds();
+        if (stale > 0) {
+            // Bonds left over from before bonding was disabled can still make
+            // iOS attempt an encrypted reconnect that now cannot succeed.
+            NimBLEDevice::deleteAllBonds();
+            Serial.printf("[BLE] cleared %d stale bond(s) from a previous build\n", stale);
+        }
+    }
 
     // Fast advertising for quick auto-reconnect. Intervals are in 0.625 ms
     // units, so 32..64 = 20..40 ms — the BLE "fast connect" window Apple

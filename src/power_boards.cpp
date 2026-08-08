@@ -120,6 +120,8 @@ uint32_t g_isoGapMs          = DEFAULT_ISO_GAP_MS;
 float    g_velCurve          = DEFAULT_VEL_CURVE;
 uint8_t  g_humanizeVel       = DEFAULT_HUMANIZE_VEL;
 uint8_t  g_humanizeMs        = DEFAULT_HUMANIZE_MS;
+uint32_t g_burstGapMs        = DEFAULT_BURST_GAP_MS;
+uint8_t  g_burstBoostPct     = DEFAULT_BURST_BOOST;
 // millis() of the last actual strike on ANY key — the density gauge used to
 // tell an isolated staccato note (long gap since this) from one inside a run.
 static uint32_t s_lastFireMs = 0;
@@ -265,6 +267,21 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
         if (g_velCurve != 1.0f) t = powf(t, g_velCurve);
         pwm = lo + (uint32_t)((float)(hi - lo) * t + 0.5f);
         if (pwm > hi) pwm = hi;
+
+        // Burst force boost. In a fast passage each note has very little time,
+        // and hammer travel goes as F*t^2 - so a soft strike physically cannot
+        // reach the string before the note is over. Push toward max when notes
+        // are arriving rapidly. Boost scales with how tight the burst is, so a
+        // moderately quick line is nudged and a real flurry goes near full power.
+        if (g_burstBoostPct > 0 && g_burstGapMs > 0 && s_lastFireMs != 0) {
+            uint32_t gap = millis() - s_lastFireMs;
+            if (gap < g_burstGapMs) {
+                uint32_t tightness = g_burstGapMs - gap;          // 0..gapMs
+                uint32_t pct = ((uint32_t)g_burstBoostPct * tightness) / g_burstGapMs;
+                if (pwm < hi) pwm += ((uint32_t)(hi - pwm) * pct) / 100;
+                if (pwm > hi) pwm = hi;
+            }
+        }
     }
 
     // Per-key force multiplier — final tweak after velocity mapping.

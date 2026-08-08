@@ -248,6 +248,15 @@ extern uint32_t g_idleDimSecs;
 // which then over-drives the other and throws away dynamic range. Within each
 // group the keys are consistent, so two numbers cover the whole keyboard.
 #define DEFAULT_MIN_PWM_BLACK  0      // 0 = follow the white floor (no split)
+
+// Burst force boost. Hammer travel goes as d = F*t^2/2m, so halving the time a
+// note has roughly QUADRUPLES the force needed to reach the same hammer speed.
+// In a fast passage each note gets very little time, and a soft PWM simply
+// never gets the hammer to the string - the note vanishes. So when notes are
+// arriving rapidly, push the force toward maximum. This is the same
+// duration-compensation commercial player pianos apply.
+#define DEFAULT_BURST_GAP_MS   110    // arrive within this of the last strike = burst
+#define DEFAULT_BURST_BOOST    60     // 0..100 %% of the way toward max force
 // Isolated-note strike boost: a lone short note (after > DEFAULT_ISO_GAP_MS of
 // silence) is stretched to at least DEFAULT_ISO_STRIKE_MS so it's clearly
 // audible; notes inside a run keep the shorter DEFAULT_MIN_STRIKE_MS.

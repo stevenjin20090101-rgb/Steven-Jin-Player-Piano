@@ -103,6 +103,12 @@ extern uint32_t g_isoGapMs;
 // (>1 expands the soft end, the main cure for "sounds robotic"); the humanize
 // values add small random scatter to force and timing so repeated notes and
 // chords aren't machine-identical.
+// Burst boost: notes arriving within g_burstGapMs of the previous strike are
+// pushed g_burstBoostPct toward max force, because a short note has too little
+// time for a soft strike to reach the string at all.
+extern uint32_t g_burstGapMs;
+extern uint8_t  g_burstBoostPct;
+
 extern float   g_velCurve;      // 0.4 .. 3.0, 1.0 = linear
 extern uint8_t g_humanizeVel;   // 0..30, +/- velocity units
 extern uint8_t g_humanizeMs;    // 0..40 ms of note-on scatter
