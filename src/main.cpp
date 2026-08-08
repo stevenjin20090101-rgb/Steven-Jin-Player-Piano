@@ -106,6 +106,8 @@ AppState appState = {
 
 // Idle-dim seconds (0 = never dim). Persisted; tunable via "dimsecs".
 uint32_t g_idleDimSecs = DEFAULT_IDLE_DIM_SECS;
+// Idle brightness floor. 0 = fully dark (AMOLED burn-in protection).
+uint8_t  g_idleDimFloor = IDLE_DIM_FLOOR;
 
 void apply_screen_brightness(uint8_t value) {
     // Only update the TARGET. The idle dimmer in loop() is the single owner
@@ -607,6 +609,10 @@ static void printHelp() {
         "    rainspeed <1..40>        rainbow-mode scroll speed\n"
         "    volume <0..100>          MASTER VOLUME - lower = softer whole piano\n"
         "    soft                     one-tap quiet preset (fullpower off + volume) + save\n"
+        "    minwhite <0..4095>       strike floor for WHITE keys\n"
+        "    minblack <0..4095>       strike floor for BLACK keys (0 = same as white)\n"
+        "    ramp <midi> [f] [t] [s]  step one key up in force to FIND its floor by ear\n"
+        "    dimfloor <0..255>        idle screen floor; 0 = fully dark (burn-in safe)\n"
         "    velcurve <0.4..3.0>      velocity->force curve; >1 = expressive soft end\n"
         "    humanvel <0..30>         random velocity scatter (stops machine-identical notes)\n"
         "    humantime <0..40>        random note-on scatter in ms (chord roll)\n"
@@ -633,7 +639,11 @@ static void printStatus() {
     {
         uint16_t span = (g_maxStrikePWM > g_minStrikePWM)
                         ? (g_maxStrikePWM - g_minStrikePWM) : 0;
-        Serial.printf("  expression: velcurve=%.2f humanvel=%u humantime=%ums | "
+        Serial.printf("  floors: white=%u black=%u%s   dimfloor=%u%s\n",
+                  g_minStrikePWM, g_minStrikePWMBlack,
+                  g_minStrikePWMBlack == 0 ? " (follows white)" : "",
+                  g_idleDimFloor, g_idleDimFloor == 0 ? " (fully dark)" : "");
+    Serial.printf("  expression: velcurve=%.2f humanvel=%u humantime=%ums | "
                       "dynamic span=%u/4095 (%u%%)%s\n",
                       g_velCurve, g_humanizeVel, g_humanizeMs, span,
                       (unsigned)((span * 100UL) / 4095),
@@ -988,6 +998,49 @@ static void handleLine(char *line) {
         Serial.printf("  SOFT preset: fullpower OFF, volume 55%%, soft-release ON.\n"
                       "  Still too loud? 'volume 35'. Notes dropping out? raise 'min' "
                       "(now %u) until the quietest ones sound again.\n", g_minStrikePWM);
+    } else if (!strncmp(line, "minwhite ", 9)) {
+        int v = atoi(line + 9);
+        if (v < 0 || v > 4095) { Serial.println("  minwhite out of range (0..4095)"); return; }
+        g_minStrikePWM = (uint16_t)v;
+        Serial.printf("  white-key floor = %d\n", v);
+    } else if (!strncmp(line, "minblack ", 9)) {
+        int v = atoi(line + 9);
+        if (v < 0 || v > 4095) { Serial.println("  minblack out of range (0..4095)"); return; }
+        g_minStrikePWMBlack = (uint16_t)v;
+        Serial.printf("  black-key floor = %d%s\n", v,
+                      v == 0 ? " (0 = follow the white floor)" : "");
+    } else if (!strncmp(line, "ramp ", 5)) {
+        // Threshold finder. Strikes ONE key repeatedly, stepping the force up,
+        // printing each level. Listen for the first level that reliably sounds
+        // - that is that group's true floor. Sitting far above it is what
+        // throws away dynamic range.
+        int note, from = 1200, to = 3400, step = 100;
+        int got = sscanf(line + 5, "%d %d %d %d", &note, &from, &to, &step);
+        if (got < 1 || note < 0 || note > 127) {
+            Serial.println("  usage: ramp <midi> [from] [to] [step]   e.g. ramp 60");
+            return;
+        }
+        if (step < 10) step = 10;
+        Serial.printf("  ramping %s (%s key) from %d to %d step %d\n",
+                      noteNameC((uint8_t)note),
+                      note_is_black((uint8_t)note) ? "BLACK" : "white", from, to, step);
+        Serial.println("  listen for the FIRST level that reliably sounds:");
+        for (int pwm = from; pwm <= to; pwm += step) {
+            Serial.printf("    %d\n", pwm);
+            manualFireNote((uint8_t)note, (uint16_t)pwm);
+            delay(140);
+            manualFireNote((uint8_t)note, 0);
+            delay(360);
+            esp_task_wdt_reset();
+        }
+        Serial.printf("  done. Set it with: %s <the level that first sounded>\n",
+                      note_is_black((uint8_t)note) ? "minblack" : "minwhite");
+    } else if (!strncmp(line, "dimfloor ", 9)) {
+        int v = atoi(line + 9);
+        if (v < 0 || v > 255) { Serial.println("  dimfloor out of range (0..255)"); return; }
+        g_idleDimFloor = (uint8_t)v;
+        Serial.printf("  idle dim floor = %d%s\n", v,
+                      v == 0 ? " (screen goes FULLY dark - AMOLED burn-in safe)" : "");
     } else if (!strncmp(line, "velcurve ", 9)) {
         float f = atof(line + 9);
         if (f < 0.4f || f > 3.0f) { Serial.println("  velcurve out of range (0.4..3.0)"); return; }
@@ -1498,7 +1551,7 @@ void loop() {
             uint32_t idleMs = (idleNoteMs < idleTouchMs) ? idleNoteMs : idleTouchMs;
 
             uint8_t userLevel = appState.screenBrightness;
-            uint8_t floorLevel = (userLevel < IDLE_DIM_FLOOR) ? userLevel : (uint8_t)IDLE_DIM_FLOOR;
+            uint8_t floorLevel = (userLevel < g_idleDimFloor) ? userLevel : g_idleDimFloor;
             uint8_t target = (g_idleDimSecs != 0 && idleMs >= g_idleDimSecs * 1000UL)
                              ? floorLevel : userLevel;
 

@@ -14,6 +14,12 @@
 // mutable at runtime via the serial console.
 uint16_t g_sweepStrikePWM = SWEEP_STRIKE_PWM;
 uint16_t g_minStrikePWM   = MIN_STRIKE_PWM;
+uint16_t g_minStrikePWMBlack = DEFAULT_MIN_PWM_BLACK;
+
+bool note_is_black(uint8_t midi_note) {
+    uint8_t s = midi_note % 12;
+    return (s == 1 || s == 3 || s == 6 || s == 8 || s == 10);
+}
 uint16_t g_maxStrikePWM   = MAX_STRIKE_PWM;
 uint32_t g_maxHoldMs      = DEFAULT_MAX_HOLD_MS;
 float    g_velocityMult   = 1.0f;
@@ -237,7 +243,14 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
         }
         if (vBoosted > 127.0f) vBoosted = 127.0f;
         if (vBoosted < 1.0f)   vBoosted = 1.0f;
+        // Per-group floor: black keys need more force than white ones. Using
+        // the right floor per group is what lets the softer group keep its
+        // dynamic range instead of being dragged up to the stiffer group's
+        // threshold.
         uint16_t lo = g_minStrikePWM;
+        if (g_minStrikePWMBlack > 0 && note_is_black(midi_note)) {
+            lo = g_minStrikePWMBlack;
+        }
         uint16_t hi = g_maxStrikePWM;
         if (hi < lo) hi = lo;
         // Perceptual velocity curve. A straight MIDI->force line is the single

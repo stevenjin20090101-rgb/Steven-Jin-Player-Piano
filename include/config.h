@@ -106,7 +106,11 @@ extern bool g_ledsEnabled;
 // level and NVS persistence is unaffected. 0 = never dim.
 // Runtime-tunable via "dimsecs <0..3600>"; persisted.
 #define DEFAULT_IDLE_DIM_SECS  60
-#define IDLE_DIM_FLOOR         10
+// Idle floor. 0 = screen goes FULLY dark. This panel is an AMOLED, where a
+// static image held for hours risks permanent burn-in, so full-off is the
+// right default for a permanent install. Runtime-tunable via "dimfloor".
+#define IDLE_DIM_FLOOR         0
+extern uint8_t g_idleDimFloor;
 extern uint32_t g_idleDimSecs;
 
 // --- Sustain pedal (servo on its own PCA9685) ------------------------------
@@ -237,6 +241,13 @@ extern uint32_t g_idleDimSecs;
 #define DEFAULT_VEL_CURVE      1.6f   // 0.4..3.0  (1.0 = linear)
 #define DEFAULT_HUMANIZE_VEL   0      // 0..30 velocity units, +/-
 #define DEFAULT_HUMANIZE_MS    0      // 0..40 ms note-on scatter
+
+// Separate strike floors for white vs black keys. Black keys sit further back
+// with different leverage and a heavier action, so they need noticeably more
+// force to sound at all. One global floor has to satisfy the stiffer group,
+// which then over-drives the other and throws away dynamic range. Within each
+// group the keys are consistent, so two numbers cover the whole keyboard.
+#define DEFAULT_MIN_PWM_BLACK  0      // 0 = follow the white floor (no split)
 // Isolated-note strike boost: a lone short note (after > DEFAULT_ISO_GAP_MS of
 // silence) is stretched to at least DEFAULT_ISO_STRIKE_MS so it's clearly
 // audible; notes inside a run keep the shorter DEFAULT_MIN_STRIKE_MS.

@@ -48,6 +48,8 @@ void settings_load() {
     g_velCurve          = p.getFloat("velCurve",  DEFAULT_VEL_CURVE);
     g_humanizeVel       = p.getUChar("humanVel",  DEFAULT_HUMANIZE_VEL);
     g_humanizeMs        = p.getUChar("humanMs",   DEFAULT_HUMANIZE_MS);
+    g_minStrikePWMBlack = p.getUShort("minPWMBlk", DEFAULT_MIN_PWM_BLACK);
+    g_idleDimFloor      = p.getUChar ("dimFloor",  IDLE_DIM_FLOOR);
     g_waterfallEnabled  = p.getBool("waterfall", DEFAULT_WATERFALL_ENABLED != 0);
     g_keyboardVizEnabled = p.getBool("keyviz", true);
     g_softRelease       = p.getBool("softRel",  DEFAULT_SOFT_RELEASE != 0);
@@ -114,6 +116,8 @@ void settings_save() {
     p.putFloat ("velCurve",  g_velCurve);
     p.putUChar ("humanVel",  g_humanizeVel);
     p.putUChar ("humanMs",   g_humanizeMs);
+    p.putUShort("minPWMBlk", g_minStrikePWMBlack);
+    p.putUChar ("dimFloor",  g_idleDimFloor);
     p.putBool  ("waterfall", g_waterfallEnabled);
     p.putBool  ("keyviz",    g_keyboardVizEnabled);
     p.putBool  ("softRel",   g_softRelease);
@@ -162,12 +166,12 @@ void settings_save() {
 struct SettingsSnap {
     uint32_t sweepPWM, minPWM, maxPWM, holdMs, retGapMs, minStrike, relMs,
              restrike, dimSecs, ledColor, isoStrike, isoGap;
-    uint16_t pwmFreq, relPwm, ledCount, ledScale, pedalUp, pedalDn;
+    uint16_t pwmFreq, relPwm, ledCount, ledScale, pedalUp, pedalDn, minPWMBlk;
     int16_t  ledOffset;
     float    velmult, velCurve;
     bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri,
              pedalOn, pedalHalf;
-    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs;
+    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs, dimFloor;
     float    keyForce[128];
 };
 static SettingsSnap s_snap;
@@ -196,6 +200,7 @@ static void takeSnap(SettingsSnap &s) {
     s.ledGlow = appState.ledGlow; s.ledVelBri = appState.ledVelBright;
     s.ledTail = appState.ledTail;
     s.volume = g_masterVolume; s.velCurve = g_velCurve;
+    s.minPWMBlk = g_minStrikePWMBlack; s.dimFloor = g_idleDimFloor;
     s.humanVel = g_humanizeVel; s.humanMs = g_humanizeMs;
     s.pedalOn = g_pedalEnabled; s.pedalUp = g_pedalUpCounts;
     s.pedalDn = g_pedalDownCounts; s.pedalHalf = g_pedalHalf;

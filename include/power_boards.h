@@ -45,7 +45,12 @@ bool broadcastAllOff();
 // Tunable strike PWM values — defaults from config.h, can be changed at
 // runtime via the serial console commands ("pwm", "min", "max", "velmult").
 extern uint16_t g_sweepStrikePWM;
-extern uint16_t g_minStrikePWM;
+extern uint16_t g_minStrikePWM;        // white-key strike floor
+// Black-key strike floor. Black keys need more force than white ones to sound.
+// 0 = follow g_minStrikePWM (single-floor behaviour).
+extern uint16_t g_minStrikePWMBlack;
+// True when this MIDI note is a black key (C#, D#, F#, G#, A#).
+bool note_is_black(uint8_t midi_note);
 extern uint16_t g_maxStrikePWM;
 
 // Velocity multiplier — applied to incoming MIDI velocity BEFORE the
