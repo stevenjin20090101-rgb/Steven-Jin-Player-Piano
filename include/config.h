@@ -230,6 +230,13 @@ extern uint32_t g_idleDimSecs;
 // Master volume 0..100. 100 = full range as set by min/max. Lower values scale
 // every strike down toward the audibility floor (never to silence).
 #define DEFAULT_MASTER_VOLUME  100
+// --- Expression / "sounds human" shaping ------------------------------------
+// A linear MIDI-velocity -> force map is why solenoid pianos sound robotic.
+// VEL_CURVE > 1 expands the soft end where the musical detail lives.
+// The humanize values add scatter so nothing is machine-identical.
+#define DEFAULT_VEL_CURVE      1.6f   // 0.4..3.0  (1.0 = linear)
+#define DEFAULT_HUMANIZE_VEL   0      // 0..30 velocity units, +/-
+#define DEFAULT_HUMANIZE_MS    0      // 0..40 ms note-on scatter
 // Isolated-note strike boost: a lone short note (after > DEFAULT_ISO_GAP_MS of
 // silence) is stretched to at least DEFAULT_ISO_STRIKE_MS so it's clearly
 // audible; notes inside a run keep the shorter DEFAULT_MIN_STRIKE_MS.

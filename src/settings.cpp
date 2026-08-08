@@ -45,6 +45,9 @@ void settings_load() {
     g_isoStrikeMs       = p.getUInt("isoStrike", DEFAULT_ISO_STRIKE_MS);
     g_isoGapMs          = p.getUInt("isoGap",    DEFAULT_ISO_GAP_MS);
     set_master_volume(p.getUChar("volume", DEFAULT_MASTER_VOLUME));
+    g_velCurve          = p.getFloat("velCurve",  DEFAULT_VEL_CURVE);
+    g_humanizeVel       = p.getUChar("humanVel",  DEFAULT_HUMANIZE_VEL);
+    g_humanizeMs        = p.getUChar("humanMs",   DEFAULT_HUMANIZE_MS);
     g_waterfallEnabled  = p.getBool("waterfall", DEFAULT_WATERFALL_ENABLED != 0);
     g_keyboardVizEnabled = p.getBool("keyviz", true);
     g_softRelease       = p.getBool("softRel",  DEFAULT_SOFT_RELEASE != 0);
@@ -108,6 +111,9 @@ void settings_save() {
     p.putUInt  ("isoStrike", g_isoStrikeMs);
     p.putUInt  ("isoGap",    g_isoGapMs);
     p.putUChar ("volume",    g_masterVolume);
+    p.putFloat ("velCurve",  g_velCurve);
+    p.putUChar ("humanVel",  g_humanizeVel);
+    p.putUChar ("humanMs",   g_humanizeMs);
     p.putBool  ("waterfall", g_waterfallEnabled);
     p.putBool  ("keyviz",    g_keyboardVizEnabled);
     p.putBool  ("softRel",   g_softRelease);
@@ -158,10 +164,10 @@ struct SettingsSnap {
              restrike, dimSecs, ledColor, isoStrike, isoGap;
     uint16_t pwmFreq, relPwm, ledCount, ledScale, pedalUp, pedalDn;
     int16_t  ledOffset;
-    float    velmult;
+    float    velmult, velCurve;
     bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri,
              pedalOn, pedalHalf;
-    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume;
+    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs;
     float    keyForce[128];
 };
 static SettingsSnap s_snap;
@@ -189,7 +195,8 @@ static void takeSnap(SettingsSnap &s) {
     s.ledReverse = appState.ledReverse; s.reactPal = appState.ledReactivePalette;
     s.ledGlow = appState.ledGlow; s.ledVelBri = appState.ledVelBright;
     s.ledTail = appState.ledTail;
-    s.volume = g_masterVolume;
+    s.volume = g_masterVolume; s.velCurve = g_velCurve;
+    s.humanVel = g_humanizeVel; s.humanMs = g_humanizeMs;
     s.pedalOn = g_pedalEnabled; s.pedalUp = g_pedalUpCounts;
     s.pedalDn = g_pedalDownCounts; s.pedalHalf = g_pedalHalf;
     memcpy(s.keyForce, g_keyForceMult, sizeof(s.keyForce));

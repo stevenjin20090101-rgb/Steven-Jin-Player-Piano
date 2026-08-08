@@ -607,6 +607,10 @@ static void printHelp() {
         "    rainspeed <1..40>        rainbow-mode scroll speed\n"
         "    volume <0..100>          MASTER VOLUME - lower = softer whole piano\n"
         "    soft                     one-tap quiet preset (fullpower off + volume) + save\n"
+        "    velcurve <0.4..3.0>      velocity->force curve; >1 = expressive soft end\n"
+        "    humanvel <0..30>         random velocity scatter (stops machine-identical notes)\n"
+        "    humantime <0..40>        random note-on scatter in ms (chord roll)\n"
+        "    expressive               anti-robot preset: wide range + curve + humanize + save\n"
         "    pedalon 0|1              sustain-pedal servo (needs pedal board at 0x47)\n"
         "    pedalup <80..600>        servo counts for pedal RELEASED\n"
         "    pedaldown <80..600>      servo counts for pedal PRESSED\n"
@@ -626,6 +630,15 @@ static void printStatus() {
     Serial.printf("  isostrike=%lu ms (lone-note boost)  isogap=%lu ms  %s\n",
                   (unsigned long)g_isoStrikeMs, (unsigned long)g_isoGapMs,
                   (g_isoStrikeMs > g_minStrikeMs && g_isoGapMs > 0) ? "[active]" : "[off]");
+    {
+        uint16_t span = (g_maxStrikePWM > g_minStrikePWM)
+                        ? (g_maxStrikePWM - g_minStrikePWM) : 0;
+        Serial.printf("  expression: velcurve=%.2f humanvel=%u humantime=%ums | "
+                      "dynamic span=%u/4095 (%u%%)%s\n",
+                      g_velCurve, g_humanizeVel, g_humanizeMs, span,
+                      (unsigned)((span * 100UL) / 4095),
+                      span < 900 ? "  <- TOO NARROW, sounds robotic" : "");
+    }
     Serial.printf("  volume=%u%%  %s\n", g_masterVolume,
                   g_fullPowerMode ? "(FULL POWER ON - every note max force, volume has no effect)"
                                   : "(velocity dynamics active)");
@@ -975,6 +988,42 @@ static void handleLine(char *line) {
         Serial.printf("  SOFT preset: fullpower OFF, volume 55%%, soft-release ON.\n"
                       "  Still too loud? 'volume 35'. Notes dropping out? raise 'min' "
                       "(now %u) until the quietest ones sound again.\n", g_minStrikePWM);
+    } else if (!strncmp(line, "velcurve ", 9)) {
+        float f = atof(line + 9);
+        if (f < 0.4f || f > 3.0f) { Serial.println("  velcurve out of range (0.4..3.0)"); return; }
+        g_velCurve = f;
+        Serial.printf("  velcurve = %.2f  (%s)\n", f,
+                      f > 1.05f ? "soft end expanded - more expressive"
+                    : f < 0.95f ? "soft end compressed - louder quiet notes"
+                                : "linear");
+    } else if (!strncmp(line, "humanvel ", 9)) {
+        int v = atoi(line + 9);
+        if (v < 0 || v > 30) { Serial.println("  humanvel out of range (0..30)"); return; }
+        g_humanizeVel = (uint8_t)v;
+        Serial.printf("  humanvel = %d (+/- velocity scatter; 0 = machine-exact)\n", v);
+    } else if (!strncmp(line, "humantime ", 10)) {
+        int v = atoi(line + 10);
+        if (v < 0 || v > 40) { Serial.println("  humantime out of range (0..40 ms)"); return; }
+        g_humanizeMs = (uint8_t)v;
+        Serial.printf("  humantime = %d ms (chord roll / breath; 0 = perfectly simultaneous)\n", v);
+    } else if (!strcmp(line, "expressive")) {
+        // The "stop sounding like a robot" preset. The big one is the strike
+        // RANGE: a high min floor squashes every note into the top of the
+        // force range, so no dynamics survive no matter what the MIDI says.
+        g_fullPowerMode = false;
+        g_minStrikePWM  = 2400;
+        g_maxStrikePWM  = 4095;
+        g_velCurve      = 1.7f;
+        g_humanizeVel   = 6;
+        g_humanizeMs    = 12;
+        g_softRelease   = true;
+        set_master_volume(100);
+        settings_save();
+        Serial.println("  EXPRESSIVE preset + saved:");
+        Serial.println("    min 2400 / max 4095  <- widened from a squashed range");
+        Serial.println("    velcurve 1.7, humanvel 6, humantime 12 ms, soft-release on");
+        Serial.println("  Tune from here: if quiet notes DROP OUT, raise 'min' by 100 at a");
+        Serial.println("  time until every key sounds. If it's too loud, lower 'max'.");
     } else if (!strncmp(line, "pedalon ", 8)) {
         int v = atoi(line + 8);
         g_pedalEnabled = (v != 0);

@@ -111,6 +111,9 @@ uint32_t g_minStrikeMs       = DEFAULT_MIN_STRIKE_MS;
 uint8_t  g_masterVolume      = DEFAULT_MASTER_VOLUME;
 uint32_t g_isoStrikeMs       = DEFAULT_ISO_STRIKE_MS;
 uint32_t g_isoGapMs          = DEFAULT_ISO_GAP_MS;
+float    g_velCurve          = DEFAULT_VEL_CURVE;
+uint8_t  g_humanizeVel       = DEFAULT_HUMANIZE_VEL;
+uint8_t  g_humanizeMs        = DEFAULT_HUMANIZE_MS;
 // millis() of the last actual strike on ANY key — the density gauge used to
 // tell an isolated staccato note (long gap since this) from one inside a run.
 static uint32_t s_lastFireMs = 0;
@@ -226,13 +229,28 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
         // minimum-pull threshold, so the floor must be high enough that
         // even velocity = 1 still actuates.
         float vBoosted = (float)velocity * g_velocityMult;
+        // Humanize velocity: a real player never strikes the same note twice
+        // with identical force. A few units of scatter stops repeated notes
+        // and sustained chords sounding machine-stamped.
+        if (g_humanizeVel > 0) {
+            vBoosted += (float)random(-(int)g_humanizeVel, (int)g_humanizeVel + 1);
+        }
         if (vBoosted > 127.0f) vBoosted = 127.0f;
         if (vBoosted < 1.0f)   vBoosted = 1.0f;
-        uint8_t v = (uint8_t)vBoosted;
         uint16_t lo = g_minStrikePWM;
         uint16_t hi = g_maxStrikePWM;
         if (hi < lo) hi = lo;
-        pwm = lo + ((uint32_t)(v - 1) * (hi - lo)) / 126;
+        // Perceptual velocity curve. A straight MIDI->force line is the single
+        // biggest reason solenoid pianos sound robotic: loudness is not linear
+        // in hammer force, and the musical detail lives at the soft end where
+        // a linear map squashes it flat.
+        //   curve > 1  expands the soft end -> expressive pp, wider dynamics
+        //   curve = 1  linear (previous behaviour)
+        float t = (vBoosted - 1.0f) / 126.0f;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        if (g_velCurve != 1.0f) t = powf(t, g_velCurve);
+        pwm = lo + (uint32_t)((float)(hi - lo) * t + 0.5f);
         if (pwm > hi) pwm = hi;
     }
 
@@ -458,6 +476,22 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
             }
         }
     }
+    // Humanize timing. Real hands are never sample-exact: a chord rolls by a
+    // few ms and a line breathes. Perfectly simultaneous note-ons are the
+    // giveaway that a machine is playing. Reuses the existing deferred-fire
+    // path, so the strike still goes through fireNoteOnNow and stays covered
+    // by the release watchdog.
+    if (g_humanizeMs > 0 && midi_note < 128 &&
+        s_keyTiming[midi_note].pendingFireMs == 0) {
+        uint32_t jitter = (uint32_t)random(0, (int)g_humanizeMs + 1);
+        if (jitter > 0) {
+            s_keyTiming[midi_note].pendingFireMs    = millis() + jitter;
+            s_keyTiming[midi_note].pendingVelocity  = velocity;
+            s_keyTiming[midi_note].pendingReleaseMs = 0;
+            return true;
+        }
+    }
+
     // Fire immediately. An immediate NoteOn supersedes ALL pending timers
     // for this note — clear the queued fire AND any scheduled release, or a
     // stale pendingReleaseMs from a prior deferred-off would later cut this

@@ -94,6 +94,14 @@ extern uint32_t g_isoGapMs;
 // Master volume 0..100 — scales strike force down toward the audibility floor
 // so the whole piano plays softer without touching min/max/velmult. Set it via
 // set_master_volume(), which also turns Full Power off (see the .cpp).
+// Expression shaping. velCurve bends the MIDI-velocity -> strike-force map
+// (>1 expands the soft end, the main cure for "sounds robotic"); the humanize
+// values add small random scatter to force and timing so repeated notes and
+// chords aren't machine-identical.
+extern float   g_velCurve;      // 0.4 .. 3.0, 1.0 = linear
+extern uint8_t g_humanizeVel;   // 0..30, +/- velocity units
+extern uint8_t g_humanizeMs;    // 0..40 ms of note-on scatter
+
 extern uint8_t g_masterVolume;
 void set_master_volume(uint8_t vol);
 
