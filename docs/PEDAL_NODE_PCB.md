@@ -9,6 +9,19 @@ trunk, **XT60** for 24 V power, both daisy-chained through.
 
 > Part of the Player Piano project. © 2026 Steven Jin — see [`../LICENSE`](../LICENSE).
 
+### Confirmed SERVO42C specs (manual V1.1.2)
+
+| Spec | Value |
+|---|---|
+| Supply `V+` | **12 V – 24 V DC** — the 24 V rail is at the top of range, so measure it |
+| `En` / `Stp` / `Dir` | **3.3 V – 24 V** → C6 drives directly, no level shifter |
+| Serial | TTL UART (`Tx`/`Rx`), configurable baud + motor address |
+| `CR_UART` mode | FOC over serial; **current adapts to load** → less holding heat |
+| Variants | `-OC` (3.3–5 V inputs, needs `Com` wired) · `-485` (RS485, ESD-protected) |
+
+No CAN on the 42C. For long daisy-chain runs the **RS485 variant** is the more
+robust choice than TTL UART.
+
 ---
 
 ## 1. What this board does
@@ -158,10 +171,11 @@ only if this is the last node and the bus needs termination help.
 
 ### ⚠️ Level shifting
 
-- **ESP32-C6 GPIOs are not 5 V tolerant.** Fit a 3-channel level shifter
-  (e.g. TXS0108E) or per-line MOSFET shifters between the C6 and the SERVO42C
-  **if** its inputs turn out to need 5 V. Many MKS boards have opto-isolated
-  inputs that want ~5 V — verify in the manual before deciding to populate.
+- **No level shifter needed for the SERVO42C.** Confirmed from the V1.1.2
+  manual: `En`, `Stp` and `Dir` accept **3.3 V–24 V**, so the C6 drives them
+  directly. (Exception: the **SERVO42C-OC** variant is 3.3–5.0 V on those pins
+  and has a `Com` pin needing 3.3–5 V — wire `Com` if that is the variant used.)
+  Leave a shifter footprint unpopulated only as insurance.
 - **Endstop:** power it from **3.3 V**. If only a 5 V unit is available, power
   at 5 V and divide its output (10 kΩ / 20 kΩ) down to 3.3 V before the GPIO.
 
