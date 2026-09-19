@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 700" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<rect width="1600" height="700" fill="#0B1020"/>
+<text x="800" y="86" text-anchor="middle" font-size="46" font-weight="700" fill="#E8ECF8">Making a machine sound human</text>
+<text x="800" y="128" text-anchor="middle" font-size="21" fill="#8C96B8">A solenoid is just on or off. Three ideas turn that into expression.</text>
+
+<g>
+<rect x="50" y="200" width="460" height="380" rx="22" fill="#151C33" stroke="#4F8CFF" stroke-width="2"/>
+<text x="280" y="250" text-anchor="middle" font-size="26" font-weight="700" fill="#4F8CFF">Soft notes stay soft</text>
+<line x1="110" y1="470" x2="450" y2="470" stroke="#2A3457" stroke-width="2"/>
+<line x1="110" y1="470" x2="110" y2="300" stroke="#2A3457" stroke-width="2"/>
+<text x="280" y="496" text-anchor="middle" font-size="13" fill="#8C96B8">how hard the key was played →</text>
+<text x="96" y="385" text-anchor="middle" font-size="13" fill="#8C96B8" transform="rotate(-90 96 385)">force →</text>
+<line x1="110" y1="470" x2="450" y2="300" stroke="#8C96B8" stroke-width="3" stroke-dasharray="8 6"/>
+<path d="M110 470 Q 330 462 450 300" fill="none" stroke="#4F8CFF" stroke-width="5" stroke-linecap="round"/>
+<rect x="150" y="518" width="14" height="4" fill="#8C96B8"/><text x="172" y="524" font-size="14" fill="#8C96B8">straight line — robotic</text>
+<rect x="150" y="544" width="14" height="5" fill="#4F8CFF"/><text x="172" y="551" font-size="14" fill="#E8ECF8">curve — quiet notes get room to breathe</text>
+</g>
+
+<g>
+<rect x="570" y="200" width="460" height="380" rx="22" fill="#151C33" stroke="#F472B6" stroke-width="2"/>
+<text x="800" y="250" text-anchor="middle" font-size="26" font-weight="700" fill="#F472B6">No two notes identical</text>
+<text x="620" y="322" font-size="14" fill="#8C96B8">machine</text>
+<g fill="#8C96B8"><circle cx="700" cy="316" r="9"/><circle cx="745" cy="316" r="9"/><circle cx="790" cy="316" r="9"/><circle cx="835" cy="316" r="9"/><circle cx="880" cy="316" r="9"/><circle cx="925" cy="316" r="9"/><circle cx="970" cy="316" r="9"/></g>
+<line x1="700" y1="345" x2="970" y2="345" stroke="#2A3457" stroke-width="1"/>
+<text x="620" y="424" font-size="14" fill="#F472B6">human</text>
+<g fill="#F472B6"><circle cx="702" cy="420" r="10"/><circle cx="748" cy="411" r="8"/><circle cx="789" cy="427" r="11"/><circle cx="836" cy="415" r="9"/><circle cx="879" cy="425" r="8"/><circle cx="927" cy="410" r="10"/><circle cx="968" cy="419" r="9"/></g>
+<text x="800" y="500" text-anchor="middle" font-size="15" fill="#E8ECF8">tiny random shifts in timing and force</text>
+<text x="800" y="524" text-anchor="middle" font-size="15" fill="#8C96B8">chords roll by a few milliseconds,</text>
+<text x="800" y="546" text-anchor="middle" font-size="15" fill="#8C96B8">the way real hands never land exactly together</text>
+</g>
+
+<g>
+<rect x="1090" y="200" width="460" height="380" rx="22" fill="#151C33" stroke="#FF6B57" stroke-width="2"/>
+<text x="1320" y="250" text-anchor="middle" font-size="26" font-weight="700" fill="#FF6B57">Short notes hit harder</text>
+<rect x="1150" y="370" width="60" height="60" rx="4" fill="#FF6B57" opacity="0.9"/>
+<rect x="1150" y="440" width="190" height="22" rx="4" fill="#2A3457"/>
+<text x="1245" y="486" text-anchor="middle" font-size="14" fill="#8C96B8">long note · gentle push</text>
+<rect x="1400" y="290" width="60" height="140" rx="4" fill="#FF6B57"/>
+<rect x="1400" y="440" width="60" height="22" rx="4" fill="#2A3457"/>
+<text x="1430" y="486" text-anchor="middle" font-size="14" fill="#8C96B8">short note · big push</text>
+<text x="1320" y="530" text-anchor="middle" font-size="15" fill="#E8ECF8">less time means the hammer needs more force</text>
+<text x="1320" y="554" text-anchor="middle" font-size="15" fill="#8C96B8">so fast passages don't go silent</text>
+</g>
+
+<text x="800" y="640" text-anchor="middle" font-size="19" fill="#E8ECF8">Every one of these is a live dial on a web panel — tuned by ear, saved to the chip, no reprogramming</text>
+<text x="800" y="678" text-anchor="middle" font-size="16" fill="#8C96B8">Made by Steven Jin</text>
+</svg>

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 780" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<rect width="1600" height="780" fill="#0B1020"/>
+<text x="800" y="86" text-anchor="middle" font-size="46" font-weight="700" fill="#E8ECF8">Why it can't set the piano on fire</text>
+<text x="800" y="128" text-anchor="middle" font-size="21" fill="#8C96B8">A stuck solenoid hits 80 °C in five minutes. Six independent layers make sure that never happens.</text>
+
+<g>
+<rect x="120" y="200" width="1360" height="64" rx="32" fill="#151C33" stroke="#3DDC97" stroke-width="2"/>
+<circle cx="160" cy="232" r="22" fill="#3DDC97"/><text x="160" y="240" text-anchor="middle" font-size="22" font-weight="700" fill="#0B1020">1</text>
+<text x="200" y="241" font-size="22" font-weight="700" fill="#E8ECF8">Verified release</text>
+<text x="420" y="241" font-size="18" fill="#8C96B8">a coil is only "off" once the chip confirms it — never assumed</text>
+<text x="1450" y="241" text-anchor="end" font-size="18" font-weight="700" fill="#3DDC97">instant</text>
+</g>
+<g>
+<rect x="120" y="282" width="1360" height="64" rx="32" fill="#151C33" stroke="#3DDC97" stroke-width="2"/>
+<circle cx="160" cy="314" r="22" fill="#3DDC97"/><text x="160" y="322" text-anchor="middle" font-size="22" font-weight="700" fill="#0B1020">2</text>
+<text x="200" y="323" font-size="22" font-weight="700" fill="#E8ECF8">Fast retry</text>
+<text x="420" y="323" font-size="18" fill="#8C96B8">a release that fails is re-sent a hundred times a second until it lands</text>
+<text x="1450" y="323" text-anchor="end" font-size="18" font-weight="700" fill="#3DDC97">10 ms</text>
+</g>
+<g>
+<rect x="120" y="364" width="1360" height="64" rx="32" fill="#151C33" stroke="#3DDC97" stroke-width="2"/>
+<circle cx="160" cy="396" r="22" fill="#3DDC97"/><text x="160" y="404" text-anchor="middle" font-size="22" font-weight="700" fill="#0B1020">3</text>
+<text x="200" y="405" font-size="22" font-weight="700" fill="#E8ECF8">Hold watchdog</text>
+<text x="420" y="405" font-size="18" fill="#8C96B8">no coil can stay energised longer than four seconds, whatever the music says</text>
+<text x="1450" y="405" text-anchor="end" font-size="18" font-weight="700" fill="#3DDC97">≤ 4 s</text>
+</g>
+<g>
+<rect x="120" y="446" width="1360" height="64" rx="32" fill="#151C33" stroke="#3DDC97" stroke-width="2"/>
+<circle cx="160" cy="478" r="22" fill="#3DDC97"/><text x="160" y="486" text-anchor="middle" font-size="22" font-weight="700" fill="#0B1020">4</text>
+<text x="200" y="487" font-size="22" font-weight="700" fill="#E8ECF8">Boot release</text>
+<text x="420" y="487" font-size="18" fill="#8C96B8">after any crash, every coil is cut before the screen even turns on</text>
+<text x="1450" y="487" text-anchor="end" font-size="18" font-weight="700" fill="#3DDC97">150 ms</text>
+</g>
+<g>
+<rect x="120" y="528" width="1360" height="64" rx="32" fill="#151C33" stroke="#3DDC97" stroke-width="2"/>
+<circle cx="160" cy="560" r="22" fill="#3DDC97"/><text x="160" y="568" text-anchor="middle" font-size="22" font-weight="700" fill="#0B1020">5</text>
+<text x="200" y="569" font-size="22" font-weight="700" fill="#E8ECF8">Hardware watchdog</text>
+<text x="420" y="569" font-size="18" fill="#8C96B8">a frozen chip reboots itself, then layer 4 takes over</text>
+<text x="1450" y="569" text-anchor="end" font-size="18" font-weight="700" fill="#3DDC97">8 s</text>
+</g>
+<g>
+<rect x="120" y="610" width="1360" height="64" rx="32" fill="#151C33" stroke="#FF6B57" stroke-width="2"/>
+<circle cx="160" cy="642" r="22" fill="#FF6B57"/><text x="160" y="650" text-anchor="middle" font-size="22" font-weight="700" fill="#0B1020">6</text>
+<text x="200" y="651" font-size="22" font-weight="700" fill="#E8ECF8">A human</text>
+<text x="420" y="651" font-size="18" fill="#8C96B8">the emergency stop button, or simply pulling the 24 V plug</text>
+<text x="1450" y="651" text-anchor="end" font-size="18" font-weight="700" fill="#FF6B57">always</text>
+</g>
+
+<text x="800" y="735" text-anchor="middle" font-size="21" fill="#E8ECF8">Any <tspan fill="#3DDC97" font-weight="700">one</tspan> of these alone prevents a fire. All six run at the same time.</text>
+</svg>

@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 700" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#8C96B8"/></marker></defs>
+<rect width="1600" height="700" fill="#0B1020"/>
+<text x="800" y="86" text-anchor="middle" font-size="46" font-weight="700" fill="#E8ECF8">The 10 milliseconds after a note arrives</text>
+<text x="800" y="128" text-anchor="middle" font-size="21" fill="#8C96B8">Every note passes through six steps before a hammer ever moves</text>
+
+<g>
+<rect x="40" y="250" width="220" height="220" rx="20" fill="#151C33" stroke="#4F8CFF" stroke-width="2"/>
+<circle cx="150" cy="288" r="20" fill="#4F8CFF"/><text x="150" y="295" text-anchor="middle" font-size="20" font-weight="700" fill="#0B1020">1</text>
+<text x="150" y="340" text-anchor="middle" font-size="22" font-weight="700" fill="#E8ECF8">Note arrives</text>
+<text x="150" y="378" text-anchor="middle" font-size="15" fill="#8C96B8">which key, and how</text>
+<text x="150" y="400" text-anchor="middle" font-size="15" fill="#8C96B8">hard it was played</text>
+<text x="150" y="440" text-anchor="middle" font-size="14" fill="#4F8CFF">velocity 1 – 127</text>
+</g>
+<line x1="262" y1="360" x2="296" y2="360" stroke="#8C96B8" stroke-width="3" marker-end="url(#ah)"/>
+
+<g>
+<rect x="300" y="250" width="220" height="220" rx="20" fill="#151C33" stroke="#A78BFA" stroke-width="2"/>
+<circle cx="410" cy="288" r="20" fill="#A78BFA"/><text x="410" y="295" text-anchor="middle" font-size="20" font-weight="700" fill="#0B1020">2</text>
+<text x="410" y="340" text-anchor="middle" font-size="22" font-weight="700" fill="#E8ECF8">Shape the force</text>
+<text x="410" y="378" text-anchor="middle" font-size="15" fill="#8C96B8">a curve keeps soft</text>
+<text x="410" y="400" text-anchor="middle" font-size="15" fill="#8C96B8">notes truly soft</text>
+<text x="410" y="440" text-anchor="middle" font-size="14" fill="#A78BFA">white &amp; black key floors</text>
+</g>
+<line x1="522" y1="360" x2="556" y2="360" stroke="#8C96B8" stroke-width="3" marker-end="url(#ah)"/>
+
+<g>
+<rect x="560" y="250" width="220" height="220" rx="20" fill="#151C33" stroke="#F472B6" stroke-width="2"/>
+<circle cx="670" cy="288" r="20" fill="#F472B6"/><text x="670" y="295" text-anchor="middle" font-size="20" font-weight="700" fill="#0B1020">3</text>
+<text x="670" y="340" text-anchor="middle" font-size="22" font-weight="700" fill="#E8ECF8">Add humanity</text>
+<text x="670" y="378" text-anchor="middle" font-size="15" fill="#8C96B8">tiny random touches so</text>
+<text x="670" y="400" text-anchor="middle" font-size="15" fill="#8C96B8">no two notes are identical</text>
+<text x="670" y="440" text-anchor="middle" font-size="14" fill="#F472B6">chords roll like real hands</text>
+</g>
+<line x1="782" y1="360" x2="816" y2="360" stroke="#8C96B8" stroke-width="3" marker-end="url(#ah)"/>
+
+<g>
+<rect x="820" y="250" width="220" height="220" rx="20" fill="#151C33" stroke="#3DDC97" stroke-width="2"/>
+<circle cx="930" cy="288" r="20" fill="#3DDC97"/><text x="930" y="295" text-anchor="middle" font-size="20" font-weight="700" fill="#0B1020">4</text>
+<text x="930" y="340" text-anchor="middle" font-size="22" font-weight="700" fill="#E8ECF8">Arm the safety</text>
+<text x="930" y="378" text-anchor="middle" font-size="15" fill="#8C96B8">a timer guarantees the</text>
+<text x="930" y="400" text-anchor="middle" font-size="15" fill="#8C96B8">coil will be released</text>
+<text x="930" y="440" text-anchor="middle" font-size="14" fill="#3DDC97">never on longer than 4 s</text>
+</g>
+<line x1="1042" y1="360" x2="1076" y2="360" stroke="#8C96B8" stroke-width="3" marker-end="url(#ah)"/>
+
+<g>
+<rect x="1080" y="250" width="220" height="220" rx="20" fill="#151C33" stroke="#FF6B57" stroke-width="2"/>
+<circle cx="1190" cy="288" r="20" fill="#FF6B57"/><text x="1190" y="295" text-anchor="middle" font-size="20" font-weight="700" fill="#0B1020">5</text>
+<text x="1190" y="340" text-anchor="middle" font-size="22" font-weight="700" fill="#E8ECF8">Strike</text>
+<text x="1190" y="378" text-anchor="middle" font-size="15" fill="#8C96B8">24 V hits the solenoid,</text>
+<text x="1190" y="400" text-anchor="middle" font-size="15" fill="#8C96B8">the hammer hits the string</text>
+<text x="1190" y="440" text-anchor="middle" font-size="14" fill="#FF6B57">the piano confirms it</text>
+</g>
+<line x1="1302" y1="360" x2="1336" y2="360" stroke="#8C96B8" stroke-width="3" marker-end="url(#ah)"/>
+
+<g>
+<rect x="1340" y="250" width="220" height="220" rx="20" fill="#151C33" stroke="#F5B942" stroke-width="2"/>
+<circle cx="1450" cy="288" r="20" fill="#F5B942"/><text x="1450" y="295" text-anchor="middle" font-size="20" font-weight="700" fill="#0B1020">6</text>
+<text x="1450" y="340" text-anchor="middle" font-size="22" font-weight="700" fill="#E8ECF8">Light it up</text>
+<text x="1450" y="378" text-anchor="middle" font-size="15" fill="#8C96B8">the LED above that key</text>
+<text x="1450" y="400" text-anchor="middle" font-size="15" fill="#8C96B8">glows the same instant</text>
+<text x="1450" y="440" text-anchor="middle" font-size="14" fill="#F5B942">stays lit while held</text>
+</g>
+
+<rect x="200" y="540" width="1200" height="60" rx="30" fill="#151C33" stroke="#2A3457"/>
+<text x="800" y="578" text-anchor="middle" font-size="20" fill="#E8ECF8">A note is never "done" until the piano <tspan fill="#3DDC97" font-weight="700">confirms</tspan> it was released — a guess is treated as still on</text>
+<text x="800" y="660" text-anchor="middle" font-size="16" fill="#8C96B8">Made by Steven Jin</text>
+</svg>

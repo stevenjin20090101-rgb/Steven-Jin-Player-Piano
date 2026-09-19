@@ -6,6 +6,8 @@ Built as a permanent interactive installation. **Made by Steven Jin** (firmware,
 
 📊 **[Visual overview with diagrams →](docs/OVERVIEW.md)** — architecture, note flow, lighting, and safety, explained with pictures.
 
+🖼️ **[Poster panels →](docs/poster/)** — four print-ready graphics (SVG + 3200px PNG) for demos and posters.
+
 ---
 
 ## How it works
