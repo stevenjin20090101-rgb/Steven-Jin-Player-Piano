@@ -73,7 +73,7 @@ void setAllBoardsPWMFreq(uint16_t hz);
 
 // Per-key force multiplier — indexed by MIDI note (0..127). Applied to
 // the final PWM value after velocity mapping. Default 1.0 = no change.
-// Range 0.0..2.0. Used by the on-screen tuning page to compensate for
+// Range 0.0..4.0. Used by the on-screen tuning page to compensate for
 // solenoids that need more or less force than the global setting.
 // Stored in NVS as a 128-float blob.
 extern float g_keyForceMult[128];
