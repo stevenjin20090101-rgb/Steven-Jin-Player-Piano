@@ -1,0 +1,4 @@
+# Bench tools for firmware 2.0.0 Bluetooth testing (tools/ota-test).
+# Pinned to the major versions they were written against; see README.md.
+bleak>=3.0,<4.0          # BLE on macOS (CoreBluetooth); the radio
+cryptography>=41.0,<51.0 # Ed25519 signing/verifying (docs/BLE_OTA.md §8, §10)
