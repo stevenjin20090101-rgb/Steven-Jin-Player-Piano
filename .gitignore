@@ -12,5 +12,7 @@
 *.pem
 !provenance/author_ed25519_public.pem
 
-# host-side dispatch simulator build output (tools/dispatch-sim, `make check`)
+# host-side simulator build output (tools/dispatch-sim, tools/ota-sim: `make check`)
 tools/dispatch-sim/sim
+tools/ota-sim/sim
+*.dSYM/
