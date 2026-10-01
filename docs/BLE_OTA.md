@@ -499,9 +499,12 @@ the key is never printed), then verify against the repository's public key — f
 is only a display label, so the script copies `firmware.bin` to `firmware-<version>.bin` before
 `gh release create … --target <commit>`; and it downloads the asset back through `binUrl` before
 it writes, re-signs (provenance) and pushes `releases/latest.json`, so the app never sees a
-manifest without its binary. `PIANO_MIN_APP_VERSION_CODE` is required. **Untested against the
-real repository** (run end to end in a sandbox with a throwaway key and stand-ins for `pio`, `gh`
-and GitHub): `--dry-run` first; 2.0.0 is its first real run.
+manifest without its binary. `PIANO_MIN_APP_VERSION_CODE` is required. It was run end to end in
+a sandbox with a throwaway key and stand-ins for `pio`, `gh` and GitHub, and on 2026-10-01 its
+`--dry-run` passed against the real repository on the committed 2.0.0 tree: every check of step
+1, the build and image check, the signature, and the manifest it would publish — nothing pushed.
+Steps 4–5 (push, release, download back, manifest) run for the first time with the 2.0.0
+release; `--dry-run` first, every time.
 
 ## 11. What the app does (the firmware may rely on it)
 

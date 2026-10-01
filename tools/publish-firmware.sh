@@ -8,10 +8,6 @@
 #  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
 # ============================================================================
 #
-# STATUS: UNTESTED against the real repository. Written 2026-09-27, before include/config.h
-# carried FW_VERSION (it refuses to run until it does). Run it with --dry-run first; its first
-# real run is the 2.0.0 release. Delete this paragraph once that release has gone through.
-#
 # Publishes a piano firmware release, so the Steven Piano app can offer it over Bluetooth
 # (docs/BLE_OTA.md section 10):
 #
