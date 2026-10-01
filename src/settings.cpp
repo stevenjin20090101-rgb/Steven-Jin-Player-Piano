@@ -11,6 +11,8 @@
 #include "power_boards.h"
 #include "ui.h"
 #include "pedal.h"
+#include "console_out.h"   // all prints: replies reach the app when a Bluetooth
+                            // command calls us; otherwise this is plain Serial
 
 #include <Preferences.h>
 #include <esp_system.h>   // esp_reset_reason()
@@ -29,7 +31,7 @@ static uint32_t s_lastSaveMs = 0;
 void settings_load() {
     Preferences p;
     if (!p.begin(kNS, /*readOnly=*/true)) {
-        Serial.println("[settings] NVS namespace missing — using defaults");
+        Console.println("[settings] NVS namespace missing — using defaults");
         return;
     }
 
@@ -88,18 +90,18 @@ void settings_load() {
     // otherwise leave the in-RAM defaults (all 1.0).
     size_t got = p.getBytes("keyForce", g_keyForceMult, sizeof(g_keyForceMult));
     if (got != sizeof(g_keyForceMult)) {
-        Serial.printf("[settings] keyForce blob missing (%u bytes) — defaults stand\n",
-                      (unsigned)got);
+        Console.printf("[settings] keyForce blob missing (%u bytes) — defaults stand\n",
+                       (unsigned)got);
     }
 
     p.end();
-    Serial.println("[settings] loaded from NVS");
+    Console.println("[settings] loaded from NVS");
 }
 
 void settings_save() {
     Preferences p;
     if (!p.begin(kNS, /*readOnly=*/false)) {
-        Serial.println("[settings] save FAILED — could not open NVS RW");
+        Console.println("[settings] save FAILED — could not open NVS RW");
         return;
     }
 
@@ -158,7 +160,7 @@ void settings_save() {
 
     p.end();
     s_lastSaveMs = millis();
-    Serial.println("[settings] saved to NVS");
+    Console.println("[settings] saved to NVS");
 }
 
 // Cheap RAM snapshot of everything settings_save() persists. settings_tick
@@ -232,9 +234,9 @@ void settings_factory() {
     if (p.begin(kNS, /*readOnly=*/false)) {
         p.clear();
         p.end();
-        Serial.println("[settings] NVS cleared — reboot to load factory defaults");
+        Console.println("[settings] NVS cleared — reboot to load factory defaults");
     } else {
-        Serial.println("[settings] factory FAILED — could not open NVS RW");
+        Console.println("[settings] factory FAILED — could not open NVS RW");
     }
 }
 
@@ -262,9 +264,9 @@ uint8_t settings_boot_inc() {
     uint8_t n = p.getUChar("bootCnt", 0) + 1;
     p.putUChar("bootCnt", n);
     p.end();
-    Serial.printf("[settings] CRASH reboot — crash count = %u\n", n);
+    Console.printf("[settings] CRASH reboot — crash count = %u\n", n);
     if (n >= 3) {
-        Serial.println("[settings] *** SAFE MODE: 3 crashes in a row, forcing Full Power ON ***");
+        Console.println("[settings] *** SAFE MODE: 3 crashes in a row, forcing Full Power ON ***");
         g_fullPowerMode = true;
     }
     return n;
@@ -277,7 +279,7 @@ void settings_boot_reset() {
     if (!p.begin(kNS, /*readOnly=*/false)) return;
     if (p.getUChar("bootCnt", 0) != 0) {
         p.putUChar("bootCnt", 0);
-        Serial.println("[settings] boot count cleared (stable uptime reached)");
+        Console.println("[settings] boot count cleared (stable uptime reached)");
     }
     p.end();
 }

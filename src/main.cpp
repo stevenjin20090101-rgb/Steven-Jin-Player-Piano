@@ -36,6 +36,7 @@
 #include "settings.h"
 #include "pedal.h"
 #include "fw_info.h"
+#include "console_out.h"
 
 // LVGL is not thread-safe. We render in a dedicated task on core 0 (away from
 // Arduino's loopTask on core 1) and protect every API call with this mutex.
@@ -562,12 +563,18 @@ static uint32_t s_lastNoteActivityMs = 0;
 //
 // The auto-release watchdog still applies to any channel fired via these
 // commands, so a forgotten "fire" releases itself after MAX_HOLD_MS.
+//
+// The same commands also arrive over Bluetooth (Nordic UART, ble_console.cpp)
+// from the Steven Piano app, where only an allow-list of them is accepted.
+// Every reply goes through `Console` (console_out.h): always to Serial, and
+// for a line that came over Bluetooth also back to the app that sent it.
 
+// The USB serial line being assembled (the Bluetooth console has its own).
 static char    s_lineBuf[80];
 static uint8_t s_lineLen = 0;
 
 static void printHelp() {
-    Serial.println(
+    Console.println(
         "\n  serial console commands:\n"
         "    help                     this list\n"
         "    status                   boards + PWM settings\n"
@@ -641,86 +648,92 @@ static void printHelp() {
 }
 
 static void printStatus() {
-    Serial.printf("\n  firmware %s  running %s (%s)\n",
-                  fw_version_full(), fw_running_slot(), fw_image_state_name());
-    Serial.printf("  loop task stack: %u B never used (of %u B)\n",
-                  (unsigned)uxTaskGetStackHighWaterMark(NULL),
-                  (unsigned)getArduinoLoopTaskStackSize());
-    Serial.printf("  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
-                  g_sweepStrikePWM, g_minStrikePWM, g_maxStrikePWM,
-                  (unsigned long)g_maxHoldMs, g_velocityMult);
-    Serial.printf("  isostrike=%lu ms (lone-note boost)  isogap=%lu ms  %s\n",
-                  (unsigned long)g_isoStrikeMs, (unsigned long)g_isoGapMs,
-                  (g_isoStrikeMs > g_minStrikeMs && g_isoGapMs > 0) ? "[active]" : "[off]");
+    Console.printf("\n  firmware %s  running %s (%s)\n",
+                   fw_version_full(), fw_running_slot(), fw_image_state_name());
+    Console.printf("  loop task stack: %u B never used (of %u B)\n",
+                   (unsigned)uxTaskGetStackHighWaterMark(NULL),
+                   (unsigned)getArduinoLoopTaskStackSize());
+    Console.printf("  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
+                   g_sweepStrikePWM, g_minStrikePWM, g_maxStrikePWM,
+                   (unsigned long)g_maxHoldMs, g_velocityMult);
+    Console.printf("  isostrike=%lu ms (lone-note boost)  isogap=%lu ms  %s\n",
+                   (unsigned long)g_isoStrikeMs, (unsigned long)g_isoGapMs,
+                   (g_isoStrikeMs > g_minStrikeMs && g_isoGapMs > 0) ? "[active]" : "[off]");
     {
         uint16_t span = (g_maxStrikePWM > g_minStrikePWM)
                         ? (g_maxStrikePWM - g_minStrikePWM) : 0;
-        Serial.printf("  floors: white=%u black=%u%s   dimfloor=%u%s\n",
+        Console.printf("  floors: white=%u black=%u%s   dimfloor=%u%s\n",
                   g_minStrikePWM, g_minStrikePWMBlack,
                   g_minStrikePWMBlack == 0 ? " (follows white)" : "",
                   g_idleDimFloor, g_idleDimFloor == 0 ? " (fully dark)" : "");
-    Serial.printf("  burst: boost=%u%% under %lums gap (short notes need more force)\n",
-                  g_burstBoostPct, (unsigned long)g_burstGapMs);
-    Serial.printf("  expression: velcurve=%.2f humanvel=%u humantime=%ums | "
-                      "dynamic span=%u/4095 (%u%%)%s\n",
-                      g_velCurve, g_humanizeVel, g_humanizeMs, span,
-                      (unsigned)((span * 100UL) / 4095),
-                      span < 900 ? "  <- TOO NARROW, sounds robotic" : "");
+    Console.printf("  burst: boost=%u%% under %lums gap (short notes need more force)\n",
+                   g_burstBoostPct, (unsigned long)g_burstGapMs);
+    Console.printf("  expression: velcurve=%.2f humanvel=%u humantime=%ums | "
+                       "dynamic span=%u/4095 (%u%%)%s\n",
+                       g_velCurve, g_humanizeVel, g_humanizeMs, span,
+                       (unsigned)((span * 100UL) / 4095),
+                       span < 900 ? "  <- TOO NARROW, sounds robotic" : "");
     }
-    Serial.printf("  volume=%u%%  %s\n", g_masterVolume,
-                  g_fullPowerMode ? "(FULL POWER ON - every note max force, volume has no effect)"
-                                  : "(velocity dynamics active)");
-    Serial.printf("  freq=%u Hz   fullpower=%s   gap=%lu ms   minstrike=%lu ms\n",
-                  g_pwmFreqHz, g_fullPowerMode ? "ON" : "OFF",
-                  (unsigned long)g_minRetriggerGapMs,
-                  (unsigned long)g_minStrikeMs);
-    Serial.printf("  softrelease=%s  releasepwm=%u  releasems=%lu ms\n",
-                  g_softRelease ? "ON" : "OFF",
-                  (unsigned)g_releasePwm, (unsigned long)g_releaseMs);
-    Serial.printf("  restrike=%lu ms (0=off; auto-tremolo for held notes)\n",
-                  (unsigned long)g_restrikeMs);
-    Serial.printf("  leds=%s   dimsecs=%lu s (0=never)\n",
-                  g_ledsEnabled ? "ON" : "OFF", (unsigned long)g_idleDimSecs);
+    Console.printf("  volume=%u%%  %s\n", g_masterVolume,
+                   g_fullPowerMode ? "(FULL POWER ON - every note max force, volume has no effect)"
+                                   : "(velocity dynamics active)");
+    Console.printf("  freq=%u Hz   fullpower=%s   gap=%lu ms   minstrike=%lu ms\n",
+                   g_pwmFreqHz, g_fullPowerMode ? "ON" : "OFF",
+                   (unsigned long)g_minRetriggerGapMs,
+                   (unsigned long)g_minStrikeMs);
+    Console.printf("  softrelease=%s  releasepwm=%u  releasems=%lu ms\n",
+                   g_softRelease ? "ON" : "OFF",
+                   (unsigned)g_releasePwm, (unsigned long)g_releaseMs);
+    Console.printf("  restrike=%lu ms (0=off; auto-tremolo for held notes)\n",
+                   (unsigned long)g_restrikeMs);
+    Console.printf("  leds=%s   dimsecs=%lu s (0=never)\n",
+                   g_ledsEnabled ? "ON" : "OFF", (unsigned long)g_idleDimSecs);
     {
         const char *mn[] = {"off","static","rainbow","reactive"};
         const char *pn[] = {"rainbow","solid","velocity","fire","ocean","forest","lava","party"};
         uint8_t md = appState.ledMode < LED_MODE_COUNT ? appState.ledMode : 0;
         uint8_t pl = appState.ledReactivePalette < REACT_PALETTE_COUNT ? appState.ledReactivePalette : 0;
-        Serial.printf("  led: mode=%s bright=%u/255 count=%u offset=%d scale=%u%% reverse=%s palette=%s\n",
-                      mn[md], appState.ledBrightness, appState.ledCount,
-                      appState.ledOffset, appState.ledScalePct,
-                      appState.ledReverse ? "on" : "off", pn[pl]);
-        Serial.printf("       glow=%u velbright=%s decay=%u rainspeed=%u tail=%u (keyed LEDs=%d)\n",
-                      appState.ledGlow, appState.ledVelBright ? "on" : "off",
-                      appState.noteDecayRate, appState.rainbowSpeed,
-                      appState.ledTail, ledUsable());
+        Console.printf("  led: mode=%s bright=%u/255 count=%u offset=%d scale=%u%% reverse=%s palette=%s\n",
+                       mn[md], appState.ledBrightness, appState.ledCount,
+                       appState.ledOffset, appState.ledScalePct,
+                       appState.ledReverse ? "on" : "off", pn[pl]);
+        Console.printf("       glow=%u velbright=%s decay=%u rainspeed=%u tail=%u (keyed LEDs=%d)\n",
+                       appState.ledGlow, appState.ledVelBright ? "on" : "off",
+                       appState.noteDecayRate, appState.rainbowSpeed,
+                       appState.ledTail, ledUsable());
     }
-    Serial.printf("  pedal: %s  sustain=%s (CC64=%u)  pedalCCs=%lu\n",
-                  g_pedalSeen ? "source SENDS pedal data"
-                              : "no pedal data seen yet from this source",
-                  g_sustainDown ? "DOWN" : "up", g_sustainRaw,
-                  (unsigned long)g_pedalCcCount);
+    Console.printf("  pedal: %s  sustain=%s (CC64=%u)  pedalCCs=%lu\n",
+                   g_pedalSeen ? "source SENDS pedal data"
+                               : "no pedal data seen yet from this source",
+                   g_sustainDown ? "DOWN" : "up", g_sustainRaw,
+                   (unsigned long)g_pedalCcCount);
     pedal_print_status();
-    Serial.printf("  i2cFails=%lu (rises during PWM-EMI storms; steady 0 is healthy)\n",
-                  (unsigned long)g_i2cFailCount);
-    Serial.println("  boards:");
+    Console.printf("  i2cFails=%lu (rises during PWM-EMI storms; steady 0 is healthy)\n",
+                   (unsigned long)g_i2cFailCount);
+    Console.println("  boards:");
     for (int i = 0; i < kNumPowerBoards; i++) {
-        Serial.printf("    [%d] 0x%02X (MIDI %u-%u): %s\n",
-                      i, powerBoards[i].chip.address(),
-                      powerBoards[i].midi_start,
-                      powerBoards[i].midi_start + powerBoards[i].key_count - 1,
-                      powerBoards[i].connected ? "OK" : "MISSING");
+        Console.printf("    [%d] 0x%02X (MIDI %u-%u): %s\n",
+                       i, powerBoards[i].chip.address(),
+                       powerBoards[i].midi_start,
+                       powerBoards[i].midi_start + powerBoards[i].key_count - 1,
+                       powerBoards[i].connected ? "OK" : "MISSING");
     }
 }
 
-static void handleLine(char *line) {
-    // Strip trailing whitespace
-    while (s_lineLen > 0 && (line[s_lineLen-1] == ' ' || line[s_lineLen-1] == '\r')) {
-        line[--s_lineLen] = 0;
+// Runs one console command. `line` is a NUL-terminated buffer the caller owns
+// (its trailing spaces are trimmed in place); `source` says where it came
+// from. Every reply goes through Console. For SRC_BLE the caller has already
+// checked the Bluetooth allow-list and turned the tee's mirror on.
+static void handleLine(char *line, ConsoleSource source) {
+    // Strip trailing whitespace. The line's own length — never the serial
+    // reader's s_lineLen: Bluetooth lines come from a different buffer.
+    size_t len = strlen(line);
+    while (len > 0 && (line[len-1] == ' ' || line[len-1] == '\r')) {
+        line[--len] = 0;
     }
-    if (s_lineLen == 0) return;
+    if (len == 0) return;
 
-    Serial.printf("> %s\n", line);
+    Console.printf("> %s\n", line);
 
     if (!strcmp(line, "help") || !strcmp(line, "?")) {
         printHelp();
@@ -730,10 +743,10 @@ static void handleLine(char *line) {
         allKeysOff();
         clearLedReactive();
         pedal_release();          // pedal up → dampers drop → ringing stops
-        Serial.println("  all keys released (per-board + ALLCALL)");
+        Console.println("  all keys released (per-board + ALLCALL)");
     } else if (!strcmp(line, "broadcast")) {
         broadcastAllOff();
-        Serial.println("  ALLCALL FULL_OFF broadcast sent to 0x70");
+        Console.println("  ALLCALL FULL_OFF broadcast sent to 0x70");
     } else if (!strcmp(line, "panic")) {
         // Emergency stop. Hammers ALLCALL FULL_OFF five times with delays
         // to defeat bus glitches that single broadcasts might lose. Also
@@ -743,7 +756,7 @@ static void handleLine(char *line) {
         clearLedReactive();
         pedal_release();          // dampers down — stop the ringing too
         g_fullPowerMode = true;
-        Serial.println("  PANIC: all solenoids released, Full Power forced ON");
+        Console.println("  PANIC: all solenoids released, Full Power forced ON");
     } else if (!strcmp(line, "snappy")) {
         // Lowest-latency "like before" preset: no LED blocking, no timing
         // deferral, no cushion — every NoteOn fires the instant it arrives.
@@ -756,8 +769,8 @@ static void handleLine(char *line) {
         clearLedReactive();
         fill_solid(leds, LED_COUNT, CRGB::Black); FastLED.show();
         settings_save();
-        Serial.println("  SNAPPY preset applied + saved: leds off, fullpower, gap 0, "
-                       "minstrike 20, softrelease off, restrike off — lowest latency");
+        Console.println("  SNAPPY preset applied + saved: leds off, fullpower, gap 0, "
+                        "minstrike 20, softrelease off, restrike off — lowest latency");
     } else if (!strcmp(line, "cinematic")) {
         // Expressive/soft preset for subtle pieces (Interstellar, Zimmer, etc.):
         // velocity DYNAMICS on (so pp stays soft, ff swells), a gentle release
@@ -774,96 +787,96 @@ static void handleLine(char *line) {
         g_ledsEnabled   = true;     // lights on
         appState.ledMode = LED_MODE_NOTE_REACTIVE;
         settings_save();
-        Serial.printf("  CINEMATIC preset applied + saved: velocity dynamics ON, soft-release ON, "
-                      "minstrike 45, gap 22. Strike range kept (min=%u max=%u).\n"
-                      "  For soft pp: lower 'min' until the quietest notes just barely sound.\n"
-                      "  For a note that must sustain: 'restrike 120' adds a gentle tremolo.\n",
-                      g_minStrikePWM, g_maxStrikePWM);
+        Console.printf("  CINEMATIC preset applied + saved: velocity dynamics ON, soft-release ON, "
+                       "minstrike 45, gap 22. Strike range kept (min=%u max=%u).\n"
+                       "  For soft pp: lower 'min' until the quietest notes just barely sound.\n"
+                       "  For a note that must sustain: 'restrike 120' adds a gentle tremolo.\n",
+                       g_minStrikePWM, g_maxStrikePWM);
     } else if (!strcmp(line, "save")) {
         settings_save();
     } else if (!strcmp(line, "reset")) {
         settings_factory();
-        Serial.println("  reboot now to load factory defaults from config.h");
+        Console.println("  reboot now to load factory defaults from config.h");
     } else if (!strcmp(line, "sweep")) {
         testSweepAllBoards();
     } else if (!strncmp(line, "pwm ", 4)) {
         int v = atoi(line + 4);
-        if (v < 0 || v > 4095) { Serial.println("  PWM out of range (0..4095)"); return; }
+        if (v < 0 || v > 4095) { Console.println("  PWM out of range (0..4095)"); return; }
         g_sweepStrikePWM = (uint16_t)v;
-        Serial.printf("  sweep PWM set to %d, running sweep\n", v);
+        Console.printf("  sweep PWM set to %d, running sweep\n", v);
         testSweepAllBoards();
     } else if (!strncmp(line, "min ", 4)) {
         int v = atoi(line + 4);
-        if (v < 0 || v > 4095) { Serial.println("  min PWM out of range"); return; }
+        if (v < 0 || v > 4095) { Console.println("  min PWM out of range"); return; }
         g_minStrikePWM = (uint16_t)v;
-        Serial.printf("  MIN_STRIKE_PWM = %d (velocity 1 now maps here)\n", v);
+        Console.printf("  MIN_STRIKE_PWM = %d (velocity 1 now maps here)\n", v);
     } else if (!strncmp(line, "max ", 4)) {
         int v = atoi(line + 4);
-        if (v < 0 || v > 4095) { Serial.println("  max PWM out of range"); return; }
+        if (v < 0 || v > 4095) { Console.println("  max PWM out of range"); return; }
         g_maxStrikePWM = (uint16_t)v;
-        Serial.printf("  MAX_STRIKE_PWM = %d (velocity 127 now maps here)\n", v);
+        Console.printf("  MAX_STRIKE_PWM = %d (velocity 127 now maps here)\n", v);
     } else if (!strncmp(line, "hold ", 5)) {
         int v = atoi(line + 5);
         set_max_hold_ms((uint32_t)(v < 0 ? 0 : v));   // clamps to thermal-safe ceiling
-        Serial.printf("  g_maxHoldMs = %lu ms (clamped to <= %d ms for fire safety)\n",
-                      (unsigned long)g_maxHoldMs, MAX_HOLD_CEILING_MS);
+        Console.printf("  g_maxHoldMs = %lu ms (clamped to <= %d ms for fire safety)\n",
+                       (unsigned long)g_maxHoldMs, MAX_HOLD_CEILING_MS);
     } else if (!strncmp(line, "gap ", 4)) {
         int v = atoi(line + 4);
-        if (v < 0 || v > 300) { Serial.println("  gap out of range (0..300 ms)"); return; }
+        if (v < 0 || v > 300) { Console.println("  gap out of range (0..300 ms)"); return; }
         g_minRetriggerGapMs = (uint32_t)v;
-        Serial.printf("  g_minRetriggerGapMs = %d ms — same-key NoteOns within this window are deferred\n", v);
+        Console.printf("  g_minRetriggerGapMs = %d ms — same-key NoteOns within this window are deferred\n", v);
     } else if (!strncmp(line, "minstrike ", 10)) {
         int v = atoi(line + 10);
-        if (v < 0 || v > 500) { Serial.println("  minstrike out of range (0..500 ms)"); return; }
+        if (v < 0 || v > 500) { Console.println("  minstrike out of range (0..500 ms)"); return; }
         g_minStrikeMs = (uint32_t)v;
-        Serial.printf("  g_minStrikeMs = %d ms — short NoteOffs deferred so the solenoid actually strikes\n", v);
+        Console.printf("  g_minStrikeMs = %d ms — short NoteOffs deferred so the solenoid actually strikes\n", v);
     } else if (!strncmp(line, "isostrike ", 10)) {
         int v = atoi(line + 10);
-        if (v < 0 || v > 500) { Serial.println("  isostrike out of range (0..500 ms)"); return; }
+        if (v < 0 || v > 500) { Console.println("  isostrike out of range (0..500 ms)"); return; }
         g_isoStrikeMs = (uint32_t)v;
-        Serial.printf("  g_isoStrikeMs = %d ms — a LONE short note (after silence) is stretched to at least this "
-                      "(vs %lu ms inside a run). %s\n", v, (unsigned long)g_minStrikeMs,
-                      (g_isoStrikeMs > g_minStrikeMs && g_isoGapMs > 0) ? "active" : "(<= minstrike or gap 0 → OFF)");
+        Console.printf("  g_isoStrikeMs = %d ms — a LONE short note (after silence) is stretched to at least this "
+                       "(vs %lu ms inside a run). %s\n", v, (unsigned long)g_minStrikeMs,
+                       (g_isoStrikeMs > g_minStrikeMs && g_isoGapMs > 0) ? "active" : "(<= minstrike or gap 0 → OFF)");
     } else if (!strncmp(line, "isogap ", 7)) {
         int v = atoi(line + 7);
-        if (v < 0 || v > 2000) { Serial.println("  isogap out of range (0..2000 ms)"); return; }
+        if (v < 0 || v > 2000) { Console.println("  isogap out of range (0..2000 ms)"); return; }
         g_isoGapMs = (uint32_t)v;
-        Serial.printf("  g_isoGapMs = %d ms — a note with more than this much silence before it counts as isolated "
-                      "(0 = boost OFF)\n", v);
+        Console.printf("  g_isoGapMs = %d ms — a note with more than this much silence before it counts as isolated "
+                       "(0 = boost OFF)\n", v);
     } else if (!strncmp(line, "restrike ", 9)) {
         int v = atoi(line + 9);
         if (v != 0 && (v < 40 || v > 1000)) {
-            Serial.println("  restrike out of range (0 = off, or 40..1000 ms)"); return;
+            Console.println("  restrike out of range (0 = off, or 40..1000 ms)"); return;
         }
         g_restrikeMs = (uint32_t)v;
-        Serial.printf("  g_restrikeMs = %d ms — %s\n", v,
-                      v ? "held notes auto re-hit at this interval (tremolo sustain)"
-                        : "auto re-strike OFF (held notes strike once)");
+        Console.printf("  g_restrikeMs = %d ms — %s\n", v,
+                       v ? "held notes auto re-hit at this interval (tremolo sustain)"
+                         : "auto re-strike OFF (held notes strike once)");
     } else if (!strncmp(line, "softrelease ", 12)) {
         int v = atoi(line + 12);
         g_softRelease = (v != 0);
-        Serial.printf("  softrelease = %s — %s\n", g_softRelease ? "ON" : "OFF",
-                      g_softRelease ? "cushion current on release (anti-clank)"
-                                    : "release cuts straight to 0");
+        Console.printf("  softrelease = %s — %s\n", g_softRelease ? "ON" : "OFF",
+                       g_softRelease ? "cushion current on release (anti-clank)"
+                                     : "release cuts straight to 0");
     } else if (!strncmp(line, "releasepwm ", 11)) {
         int v = atoi(line + 11);
-        if (v < 0 || v > 4095) { Serial.println("  releasepwm out of range (0..4095)"); return; }
+        if (v < 0 || v > 4095) { Console.println("  releasepwm out of range (0..4095)"); return; }
         g_releasePwm = (uint16_t)v;
-        Serial.printf("  g_releasePwm = %d (cushion current; keep low enough not to hold the key)\n", v);
+        Console.printf("  g_releasePwm = %d (cushion current; keep low enough not to hold the key)\n", v);
     } else if (!strncmp(line, "releasems ", 10)) {
         int v = atoi(line + 10);
-        if (v < 0 || v > 200) { Serial.println("  releasems out of range (0..200 ms)"); return; }
+        if (v < 0 || v > 200) { Console.println("  releasems out of range (0..200 ms)"); return; }
         g_releaseMs = (uint32_t)v;
-        Serial.printf("  g_releaseMs = %d ms (cushion duration before cut to 0)\n", v);
+        Console.printf("  g_releaseMs = %d ms (cushion duration before cut to 0)\n", v);
     } else if (!strncmp(line, "keyforce ", 9)) {
         int note; float mult;
         if (sscanf(line + 9, "%d %f", &note, &mult) != 2) {
-            Serial.println("  usage: keyforce <midi 0..127> <0.0..2.0>"); return;
+            Console.println("  usage: keyforce <midi 0..127> <0.0..2.0>"); return;
         }
-        if (note < 0 || note > 127) { Serial.println("  note out of range"); return; }
-        if (mult < 0.0f || mult > 4.0f) { Serial.println("  mult out of range (0..4)"); return; }
+        if (note < 0 || note > 127) { Console.println("  note out of range"); return; }
+        if (mult < 0.0f || mult > 4.0f) { Console.println("  mult out of range (0..4)"); return; }
         g_keyForceMult[note] = mult;
-        Serial.printf("  g_keyForceMult[%d] = %.2fx\n", note, mult);
+        Console.printf("  g_keyForceMult[%d] = %.2fx\n", note, mult);
     } else if (!strncmp(line, "keyforce_all ", 13) ||
                !strncmp(line, "keyforce_white ", 15) ||
                !strncmp(line, "keyforce_black ", 15)) {
@@ -872,7 +885,7 @@ static void handleLine(char *line) {
         // "all blacks are stiffer, bump them" without 36 individual writes.
         const char *arg = strchr(line, ' ') + 1;
         float mult = atof(arg);
-        if (mult < 0.0f || mult > 4.0f) { Serial.println("  mult out of range (0..4)"); return; }
+        if (mult < 0.0f || mult > 4.0f) { Console.println("  mult out of range (0..4)"); return; }
         // Black key semitones in any octave: 1=C#, 3=D#, 6=F#, 8=G#, 10=A#
         bool wantWhite = strncmp(line, "keyforce_white", 14) == 0;
         bool wantBlack = strncmp(line, "keyforce_black", 14) == 0;
@@ -886,125 +899,125 @@ static void handleLine(char *line) {
                 hits++;
             }
         }
-        Serial.printf("  set %d keys to %.2fx (%s)\n", hits, mult,
-                      wantAll ? "all" : (wantWhite ? "white only" : "black only"));
+        Console.printf("  set %d keys to %.2fx (%s)\n", hits, mult,
+                       wantAll ? "all" : (wantWhite ? "white only" : "black only"));
     } else if (!strncmp(line, "velmult ", 8)) {
         float f = atof(line + 8);
-        if (f < 0.1f || f > 5.0f) { Serial.println("  velmult out of range (0.1..5.0)"); return; }
+        if (f < 0.1f || f > 5.0f) { Console.println("  velmult out of range (0.1..5.0)"); return; }
         g_velocityMult = f;
-        Serial.printf("  g_velocityMult = %.2f (incoming velocity scaled by this)\n", f);
+        Console.printf("  g_velocityMult = %.2f (incoming velocity scaled by this)\n", f);
     } else if (!strncmp(line, "freq ", 5)) {
         int hz = atoi(line + 5);
-        if (hz < 24 || hz > 1526) { Serial.println("  freq out of range (24..1526 Hz)"); return; }
+        if (hz < 24 || hz > 1526) { Console.println("  freq out of range (24..1526 Hz)"); return; }
         setAllBoardsPWMFreq((uint16_t)hz);
-        Serial.printf("  PWM carrier = %d Hz on all boards (higher = less coil hum)\n", hz);
+        Console.printf("  PWM carrier = %d Hz on all boards (higher = less coil hum)\n", hz);
     } else if (!strncmp(line, "fullpower ", 10)) {
         int v = atoi(line + 10);
         g_fullPowerMode = (v != 0);
-        Serial.printf("  fullpower = %s — %s\n",
-                      g_fullPowerMode ? "ON" : "OFF",
-                      g_fullPowerMode
-                        ? "every NoteOn drives FULL_ON. Max force, no hum, no velocity."
-                        : "velocity-mapped PWM with min/max/velmult.");
+        Console.printf("  fullpower = %s — %s\n",
+                       g_fullPowerMode ? "ON" : "OFF",
+                       g_fullPowerMode
+                         ? "every NoteOn drives FULL_ON. Max force, no hum, no velocity."
+                         : "velocity-mapped PWM with min/max/velmult.");
     } else if (!strncmp(line, "waterfall ", 10)) {
         int v = atoi(line + 10);
         g_waterfallEnabled = (v != 0);
-        Serial.println("  waterfall code has been removed — flag retained but unused");
+        Console.println("  waterfall code has been removed — flag retained but unused");
     } else if (!strncmp(line, "keyviz ", 7)) {
         int v = atoi(line + 7);
         g_keyboardVizEnabled = (v != 0);
-        Serial.printf("  keyboard viz = %s (key highlight on NoteOn/Off)\n",
-                      g_keyboardVizEnabled ? "ON" : "OFF");
+        Console.printf("  keyboard viz = %s (key highlight on NoteOn/Off)\n",
+                       g_keyboardVizEnabled ? "ON" : "OFF");
     } else if (!strncmp(line, "dimsecs ", 8)) {
         int v = atoi(line + 8);
-        if (v < 0 || v > 3600) { Serial.println("  dimsecs out of range (0..3600, 0=never)"); return; }
+        if (v < 0 || v > 3600) { Console.println("  dimsecs out of range (0..3600, 0=never)"); return; }
         g_idleDimSecs = (uint32_t)v;
-        Serial.printf("  g_idleDimSecs = %d s — screen fades down after this long idle (0=never)\n", v);
+        Console.printf("  g_idleDimSecs = %d s — screen fades down after this long idle (0=never)\n", v);
     } else if (!strncmp(line, "leds ", 5)) {
         int v = atoi(line + 5);
         g_ledsEnabled = (v != 0);
         if (!g_ledsEnabled) { clearLedReactive(); fill_solid(leds, LED_COUNT, CRGB::Black); FastLED.show(); }
-        Serial.printf("  LEDs = %s%s\n", g_ledsEnabled ? "ON" : "OFF",
-                      g_ledsEnabled ? "" : " (no FastLED work — frees ~9ms/frame under load)");
+        Console.printf("  LEDs = %s%s\n", g_ledsEnabled ? "ON" : "OFF",
+                       g_ledsEnabled ? "" : " (no FastLED work — frees ~9ms/frame under load)");
     } else if (!strncmp(line, "ledmode ", 8)) {
         int v = atoi(line + 8);
-        if (v < 0 || v >= LED_MODE_COUNT) { Serial.println("  ledmode 0=off 1=static 2=rainbow 3=reactive"); return; }
+        if (v < 0 || v >= LED_MODE_COUNT) { Console.println("  ledmode 0=off 1=static 2=rainbow 3=reactive"); return; }
         appState.ledMode = (LedMode)v;
         const char *nm[] = {"OFF","STATIC","RAINBOW","NOTE-REACTIVE"};
-        Serial.printf("  LED mode = %s\n", nm[v]);
+        Console.printf("  LED mode = %s\n", nm[v]);
     } else if (!strncmp(line, "ledbright ", 10)) {
         int v = atoi(line + 10);
-        if (v < 0 || v > 255) { Serial.println("  ledbright out of range (0..255)"); return; }
+        if (v < 0 || v > 255) { Console.println("  ledbright out of range (0..255)"); return; }
         appState.ledBrightness = (uint8_t)v;
         FastLED.setBrightness(appState.ledBrightness);
-        Serial.printf("  LED brightness = %d/255 (%d%%)\n", v, (v * 100) / 255);
+        Console.printf("  LED brightness = %d/255 (%d%%)\n", v, (v * 100) / 255);
     } else if (!strncmp(line, "ledcount ", 9)) {
         int v = atoi(line + 9);
-        if (v < 1 || v > LED_COUNT) { Serial.printf("  ledcount out of range (1..%d)\n", LED_COUNT); return; }
+        if (v < 1 || v > LED_COUNT) { Console.printf("  ledcount out of range (1..%d)\n", LED_COUNT); return; }
         appState.ledCount = (uint16_t)v;
         memset(noteHeat, 0, sizeof(noteHeat));
-        Serial.printf("  LED count = %d (mapping updates live; reboot to change clock-out length)\n", v);
+        Console.printf("  LED count = %d (mapping updates live; reboot to change clock-out length)\n", v);
     } else if (!strncmp(line, "ledoffset ", 10)) {
         int v = atoi(line + 10);
-        if (v < -LED_COUNT || v > LED_COUNT) { Serial.println("  ledoffset out of range"); return; }
+        if (v < -LED_COUNT || v > LED_COUNT) { Console.println("  ledoffset out of range"); return; }
         appState.ledOffset = (int16_t)v;
-        Serial.printf("  LED offset = %d (shifts the lit LED under the played key)\n", v);
+        Console.printf("  LED offset = %d (shifts the lit LED under the played key)\n", v);
     } else if (!strncmp(line, "ledreverse ", 11)) {
         int v = atoi(line + 11);
         appState.ledReverse = (v != 0);
-        Serial.printf("  LED reverse = %s (strip runs %s)\n",
-                      appState.ledReverse ? "ON" : "OFF",
-                      appState.ledReverse ? "high-note → low-note" : "low-note → high-note");
+        Console.printf("  LED reverse = %s (strip runs %s)\n",
+                       appState.ledReverse ? "ON" : "OFF",
+                       appState.ledReverse ? "high-note → low-note" : "low-note → high-note");
     } else if (!strncmp(line, "reactcolor ", 11)) {
         int v = atoi(line + 11);
-        if (v < 0 || v >= REACT_PALETTE_COUNT) { Serial.println("  reactcolor 0..7 (rainbow/solid/velocity/fire/ocean/forest/lava/party)"); return; }
+        if (v < 0 || v >= REACT_PALETTE_COUNT) { Console.println("  reactcolor 0..7 (rainbow/solid/velocity/fire/ocean/forest/lava/party)"); return; }
         appState.ledReactivePalette = (uint8_t)v;
         const char *pn[] = {"pitch-rainbow","solid","velocity","fire","ocean","forest","lava","party"};
-        Serial.printf("  note-reactive palette = %d (%s)\n", v, pn[v]);
+        Console.printf("  note-reactive palette = %d (%s)\n", v, pn[v]);
     } else if (!strncmp(line, "ledscale ", 9)) {
         int v = atoi(line + 9);
-        if (v < 10 || v > 400) { Serial.println("  ledscale out of range (10..400 %)"); return; }
+        if (v < 10 || v > 400) { Console.println("  ledscale out of range (10..400 %)"); return; }
         appState.ledScalePct = (uint16_t)v;
-        Serial.printf("  LED scale = %d%% (trims the note→LED drift across the keyboard)\n", v);
+        Console.printf("  LED scale = %d%% (trims the note→LED drift across the keyboard)\n", v);
     } else if (!strncmp(line, "ledtail ", 8)) {
         int v = atoi(line + 8);
-        if (v < 0 || v >= LED_COUNT) { Serial.println("  ledtail out of range"); return; }
+        if (v < 0 || v >= LED_COUNT) { Console.println("  ledtail out of range"); return; }
         appState.ledTail = (uint8_t)v;
         clearLedReactive();
-        Serial.printf("  LED tail = %d — the last %d LED(s) (past the solenoid keys) stay dark; "
-                      "notes now map across %d LEDs\n", v, v, ledUsable());
+        Console.printf("  LED tail = %d — the last %d LED(s) (past the solenoid keys) stay dark; "
+                       "notes now map across %d LEDs\n", v, v, ledUsable());
     } else if (!strncmp(line, "ledtest ", 8)) {
         int note = atoi(line + 8);
-        if (note < 0 || note > 127) { Serial.println("  usage: ledtest <midi 0..127>"); return; }
+        if (note < 0 || note > 127) { Console.println("  usage: ledtest <midi 0..127>"); return; }
         s_ledTestIdx = noteToLed((uint8_t)note);
         s_ledTestUntilMs = millis() + 4000;    // hold the white marker ~4 s
         s_ledReactiveDirty = true;
-        Serial.printf("  ledtest: note %d (%s) → LED %d lit white for 4 s — align it under the key\n",
-                      note, noteNameC((uint8_t)note), s_ledTestIdx);
+        Console.printf("  ledtest: note %d (%s) → LED %d lit white for 4 s — align it under the key\n",
+                       note, noteNameC((uint8_t)note), s_ledTestIdx);
     } else if (!strncmp(line, "ledglow ", 8)) {
         int v = atoi(line + 8);
-        if (v < 0 || v > 10) { Serial.println("  ledglow out of range (0..10)"); return; }
+        if (v < 0 || v > 10) { Console.println("  ledglow out of range (0..10)"); return; }
         appState.ledGlow = (uint8_t)v;
-        Serial.printf("  LED glow = %d (each note lights ±%d neighbours with falloff)\n", v, v);
+        Console.printf("  LED glow = %d (each note lights ±%d neighbours with falloff)\n", v, v);
     } else if (!strncmp(line, "velbright ", 10)) {
         int v = atoi(line + 10);
         appState.ledVelBright = (v != 0);
-        Serial.printf("  velocity→brightness = %s\n", appState.ledVelBright ? "ON (harder = brighter)" : "OFF (all notes full)");
+        Console.printf("  velocity→brightness = %s\n", appState.ledVelBright ? "ON (harder = brighter)" : "OFF (all notes full)");
     } else if (!strncmp(line, "decay ", 6)) {
         int v = atoi(line + 6);
-        if (v < 1 || v > 40) { Serial.println("  decay out of range (1..40)"); return; }
+        if (v < 1 || v > 40) { Console.println("  decay out of range (1..40)"); return; }
         appState.noteDecayRate = (uint8_t)v;
-        Serial.printf("  decay = %d (higher = notes fade faster / linger less)\n", v);
+        Console.printf("  decay = %d (higher = notes fade faster / linger less)\n", v);
     } else if (!strncmp(line, "rainspeed ", 10)) {
         int v = atoi(line + 10);
-        if (v < 1 || v > 40) { Serial.println("  rainspeed out of range (1..40)"); return; }
+        if (v < 1 || v > 40) { Console.println("  rainspeed out of range (1..40)"); return; }
         appState.rainbowSpeed = (uint8_t)v;
-        Serial.printf("  rainbow speed = %d\n", v);
+        Console.printf("  rainbow speed = %d\n", v);
     } else if (!strncmp(line, "volume ", 7)) {
         int v = atoi(line + 7);
-        if (v < 0 || v > 100) { Serial.println("  volume out of range (0..100)"); return; }
+        if (v < 0 || v > 100) { Console.println("  volume out of range (0..100)"); return; }
         set_master_volume((uint8_t)v);
-        Serial.printf("  volume = %d%% (100 = full range; lower = softer overall)\n", v);
+        Console.printf("  volume = %d%% (100 = full range; lower = softer overall)\n", v);
     } else if (!strcmp(line, "soft")) {
         // One-tap quiet preset. Full Power OFF is the big one — it forces every
         // note to maximum force, so nothing else can make the piano soft while
@@ -1013,37 +1026,37 @@ static void handleLine(char *line) {
         set_master_volume(55);
         g_softRelease = true;            // cushion the release, no backstop clank
         settings_save();
-        Serial.printf("  SOFT preset: fullpower OFF, volume 55%%, soft-release ON.\n"
-                      "  Still too loud? 'volume 35'. Notes dropping out? raise 'min' "
-                      "(now %u) until the quietest ones sound again.\n", g_minStrikePWM);
+        Console.printf("  SOFT preset: fullpower OFF, volume 55%%, soft-release ON.\n"
+                       "  Still too loud? 'volume 35'. Notes dropping out? raise 'min' "
+                       "(now %u) until the quietest ones sound again.\n", g_minStrikePWM);
     } else if (!strncmp(line, "minwhite ", 9)) {
         int v = atoi(line + 9);
-        if (v < 0 || v > 4095) { Serial.println("  minwhite out of range (0..4095)"); return; }
+        if (v < 0 || v > 4095) { Console.println("  minwhite out of range (0..4095)"); return; }
         g_minStrikePWM = (uint16_t)v;
-        Serial.printf("  white-key floor = %d\n", v);
+        Console.printf("  white-key floor = %d\n", v);
     } else if (!strncmp(line, "minblack ", 9)) {
         int v = atoi(line + 9);
-        if (v < 0 || v > 4095) { Serial.println("  minblack out of range (0..4095)"); return; }
+        if (v < 0 || v > 4095) { Console.println("  minblack out of range (0..4095)"); return; }
         g_minStrikePWMBlack = (uint16_t)v;
-        Serial.printf("  black-key floor = %d%s\n", v,
-                      v == 0 ? " (0 = follow the white floor)" : "");
+        Console.printf("  black-key floor = %d%s\n", v,
+                       v == 0 ? " (0 = follow the white floor)" : "");
     } else if (!strcmp(line, "blereset")) {
         int n = NimBLEDevice::getNumBonds();
         NimBLEDevice::deleteAllBonds();
-        Serial.printf("  cleared %d stored BLE bond(s)\n", n);
-        Serial.println("  bonding is disabled, so none should accumulate. If the iPad still");
-        Serial.println("  refuses to connect, do 'Forget This Device' there ONCE — the stale");
-        Serial.println("  key is on its side — then pair again. It should not recur.");
+        Console.printf("  cleared %d stored BLE bond(s)\n", n);
+        Console.println("  bonding is disabled, so none should accumulate. If the iPad still");
+        Console.println("  refuses to connect, do 'Forget This Device' there ONCE — the stale");
+        Console.println("  key is on its side — then pair again. It should not recur.");
     } else if (!strncmp(line, "burstboost ", 11)) {
         int v = atoi(line + 11);
-        if (v < 0 || v > 100) { Serial.println("  burstboost out of range (0..100 %)"); return; }
+        if (v < 0 || v > 100) { Console.println("  burstboost out of range (0..100 %)"); return; }
         g_burstBoostPct = (uint8_t)v;
-        Serial.printf("  burstboost = %d%% — fast notes pushed this far toward max force\n", v);
+        Console.printf("  burstboost = %d%% — fast notes pushed this far toward max force\n", v);
     } else if (!strncmp(line, "burstgap ", 9)) {
         int v = atoi(line + 9);
-        if (v < 0 || v > 600) { Serial.println("  burstgap out of range (0..600 ms)"); return; }
+        if (v < 0 || v > 600) { Console.println("  burstgap out of range (0..600 ms)"); return; }
         g_burstGapMs = (uint32_t)v;
-        Serial.printf("  burstgap = %d ms — notes closer than this count as a burst\n", v);
+        Console.printf("  burstgap = %d ms — notes closer than this count as a burst\n", v);
     } else if (!strncmp(line, "testmin", 7) || !strncmp(line, "testmax", 7)) {
         // Fire ONE key at exactly its group's floor (or the ceiling) so you can
         // hear whether that setting is right. The floor is the number that
@@ -1053,25 +1066,25 @@ static void handleLine(char *line) {
         int note = 60;
         const char *arg = strchr(line, ' ');
         if (arg) note = atoi(arg + 1);
-        if (note < 0 || note > 127) { Serial.println("  usage: testmin|testmax [midi]"); return; }
+        if (note < 0 || note > 127) { Console.println("  usage: testmin|testmax [midi]"); return; }
         bool black = note_is_black((uint8_t)note);
         uint16_t lo = (black && g_minStrikePWMBlack > 0) ? g_minStrikePWMBlack
                                                          : g_minStrikePWM;
         uint16_t pwm = wantMax ? g_maxStrikePWM : lo;
-        Serial.printf("  %s on %s (%s key) at pwm=%u  [%s]\n",
-                      wantMax ? "MAX" : "MIN", noteNameC((uint8_t)note),
-                      black ? "BLACK" : "white", pwm,
-                      wantMax ? "should be the loudest this key gets"
-                              : "should be the QUIETEST that still reliably sounds");
+        Console.printf("  %s on %s (%s key) at pwm=%u  [%s]\n",
+                       wantMax ? "MAX" : "MIN", noteNameC((uint8_t)note),
+                       black ? "BLACK" : "white", pwm,
+                       wantMax ? "should be the loudest this key gets"
+                               : "should be the QUIETEST that still reliably sounds");
         if (!manualFireNote((uint8_t)note, pwm)) {
-            Serial.println("  no board for that note (is the trunk connected?)");
+            Console.println("  no board for that note (is the trunk connected?)");
             return;
         }
         delay(150);
         manualFireNote((uint8_t)note, 0);
         if (!wantMax) {
-            Serial.printf("  silent or weak? raise it:  %s %u\n",
-                          black ? "minblack" : "minwhite", (unsigned)(lo + 100));
+            Console.printf("  silent or weak? raise it:  %s %u\n",
+                           black ? "minblack" : "minwhite", (unsigned)(lo + 100));
         }
     } else if (!strncmp(line, "ramp ", 5)) {
         // Threshold finder. Strikes ONE key repeatedly, stepping the force up,
@@ -1081,48 +1094,48 @@ static void handleLine(char *line) {
         int note, from = 1200, to = 3400, step = 100;
         int got = sscanf(line + 5, "%d %d %d %d", &note, &from, &to, &step);
         if (got < 1 || note < 0 || note > 127) {
-            Serial.println("  usage: ramp <midi> [from] [to] [step]   e.g. ramp 60");
+            Console.println("  usage: ramp <midi> [from] [to] [step]   e.g. ramp 60");
             return;
         }
         if (step < 10) step = 10;
-        Serial.printf("  ramping %s (%s key) from %d to %d step %d\n",
-                      noteNameC((uint8_t)note),
-                      note_is_black((uint8_t)note) ? "BLACK" : "white", from, to, step);
-        Serial.println("  listen for the FIRST level that reliably sounds:");
+        Console.printf("  ramping %s (%s key) from %d to %d step %d\n",
+                       noteNameC((uint8_t)note),
+                       note_is_black((uint8_t)note) ? "BLACK" : "white", from, to, step);
+        Console.println("  listen for the FIRST level that reliably sounds:");
         for (int pwm = from; pwm <= to; pwm += step) {
-            Serial.printf("    %d\n", pwm);
+            Console.printf("    %d\n", pwm);
             manualFireNote((uint8_t)note, (uint16_t)pwm);
             delay(140);
             manualFireNote((uint8_t)note, 0);
             delay(360);
             esp_task_wdt_reset();
         }
-        Serial.printf("  done. Set it with: %s <the level that first sounded>\n",
-                      note_is_black((uint8_t)note) ? "minblack" : "minwhite");
+        Console.printf("  done. Set it with: %s <the level that first sounded>\n",
+                       note_is_black((uint8_t)note) ? "minblack" : "minwhite");
     } else if (!strncmp(line, "dimfloor ", 9)) {
         int v = atoi(line + 9);
-        if (v < 0 || v > 255) { Serial.println("  dimfloor out of range (0..255)"); return; }
+        if (v < 0 || v > 255) { Console.println("  dimfloor out of range (0..255)"); return; }
         g_idleDimFloor = (uint8_t)v;
-        Serial.printf("  idle dim floor = %d%s\n", v,
-                      v == 0 ? " (screen goes FULLY dark - AMOLED burn-in safe)" : "");
+        Console.printf("  idle dim floor = %d%s\n", v,
+                       v == 0 ? " (screen goes FULLY dark - AMOLED burn-in safe)" : "");
     } else if (!strncmp(line, "velcurve ", 9)) {
         float f = atof(line + 9);
-        if (f < 0.4f || f > 3.0f) { Serial.println("  velcurve out of range (0.4..3.0)"); return; }
+        if (f < 0.4f || f > 3.0f) { Console.println("  velcurve out of range (0.4..3.0)"); return; }
         g_velCurve = f;
-        Serial.printf("  velcurve = %.2f  (%s)\n", f,
-                      f > 1.05f ? "soft end expanded - more expressive"
-                    : f < 0.95f ? "soft end compressed - louder quiet notes"
-                                : "linear");
+        Console.printf("  velcurve = %.2f  (%s)\n", f,
+                       f > 1.05f ? "soft end expanded - more expressive"
+                     : f < 0.95f ? "soft end compressed - louder quiet notes"
+                                 : "linear");
     } else if (!strncmp(line, "humanvel ", 9)) {
         int v = atoi(line + 9);
-        if (v < 0 || v > 30) { Serial.println("  humanvel out of range (0..30)"); return; }
+        if (v < 0 || v > 30) { Console.println("  humanvel out of range (0..30)"); return; }
         g_humanizeVel = (uint8_t)v;
-        Serial.printf("  humanvel = %d (+/- velocity scatter; 0 = machine-exact)\n", v);
+        Console.printf("  humanvel = %d (+/- velocity scatter; 0 = machine-exact)\n", v);
     } else if (!strncmp(line, "humantime ", 10)) {
         int v = atoi(line + 10);
-        if (v < 0 || v > 40) { Serial.println("  humantime out of range (0..40 ms)"); return; }
+        if (v < 0 || v > 40) { Console.println("  humantime out of range (0..40 ms)"); return; }
         g_humanizeMs = (uint8_t)v;
-        Serial.printf("  humantime = %d ms (chord roll / breath; 0 = perfectly simultaneous)\n", v);
+        Console.printf("  humantime = %d ms (chord roll / breath; 0 = perfectly simultaneous)\n", v);
     } else if (!strcmp(line, "expressive")) {
         // The "stop sounding like a robot" preset. The big one is the strike
         // RANGE: a high min floor squashes every note into the top of the
@@ -1136,53 +1149,53 @@ static void handleLine(char *line) {
         g_softRelease   = true;
         set_master_volume(100);
         settings_save();
-        Serial.println("  EXPRESSIVE preset + saved:");
-        Serial.println("    min 2400 / max 4095  <- widened from a squashed range");
-        Serial.println("    velcurve 1.7, humanvel 6, humantime 12 ms, soft-release on");
-        Serial.println("  Tune from here: if quiet notes DROP OUT, raise 'min' by 100 at a");
-        Serial.println("  time until every key sounds. If it's too loud, lower 'max'.");
+        Console.println("  EXPRESSIVE preset + saved:");
+        Console.println("    min 2400 / max 4095  <- widened from a squashed range");
+        Console.println("    velcurve 1.7, humanvel 6, humantime 12 ms, soft-release on");
+        Console.println("  Tune from here: if quiet notes DROP OUT, raise 'min' by 100 at a");
+        Console.println("  time until every key sounds. If it's too loud, lower 'max'.");
     } else if (!strncmp(line, "pedalon ", 8)) {
         int v = atoi(line + 8);
         g_pedalEnabled = (v != 0);
         if (g_pedalEnabled) pedal_init(); else pedal_release();
-        Serial.printf("  sustain pedal = %s\n", g_pedalEnabled ? "ENABLED" : "disabled");
+        Console.printf("  sustain pedal = %s\n", g_pedalEnabled ? "ENABLED" : "disabled");
     } else if (!strncmp(line, "pedalup ", 8)) {
         int v = atoi(line + 8);
-        if (v < 80 || v > 600) { Serial.println("  pedalup out of range (80..600 counts)"); return; }
+        if (v < 80 || v > 600) { Console.println("  pedalup out of range (80..600 counts)"); return; }
         g_pedalUpCounts = (uint16_t)v;
         pedal_release();                    // move to the new UP position now
-        Serial.printf("  pedal UP = %d counts (~%.2f ms pulse)\n", v, v * 20.0 / 4096.0);
+        Console.printf("  pedal UP = %d counts (~%.2f ms pulse)\n", v, v * 20.0 / 4096.0);
     } else if (!strncmp(line, "pedaldown ", 10)) {
         int v = atoi(line + 10);
-        if (v < 80 || v > 600) { Serial.println("  pedaldown out of range (80..600 counts)"); return; }
+        if (v < 80 || v > 600) { Console.println("  pedaldown out of range (80..600 counts)"); return; }
         g_pedalDownCounts = (uint16_t)v;
-        Serial.printf("  pedal DOWN = %d counts (~%.2f ms pulse)\n", v, v * 20.0 / 4096.0);
+        Console.printf("  pedal DOWN = %d counts (~%.2f ms pulse)\n", v, v * 20.0 / 4096.0);
     } else if (!strncmp(line, "pedalhalf ", 10)) {
         int v = atoi(line + 10);
         g_pedalHalf = (v != 0);
-        Serial.printf("  half-pedalling = %s\n", g_pedalHalf
-                      ? "ON (CC64 value maps continuously)"
-                      : "off (CC64 <64 = up, >=64 = down)");
+        Console.printf("  half-pedalling = %s\n", g_pedalHalf
+                       ? "ON (CC64 value maps continuously)"
+                       : "off (CC64 <64 = up, >=64 = down)");
     } else if (!strncmp(line, "pedaltest ", 10)) {
         // Drive the servo to a raw count so you can find the endpoints safely.
         int v = atoi(line + 10);
-        if (v < 80 || v > 600) { Serial.println("  pedaltest out of range (80..600)"); return; }
-        if (!g_pedalEnabled) { Serial.println("  enable it first: pedalon 1"); return; }
+        if (v < 80 || v > 600) { Console.println("  pedaltest out of range (80..600)"); return; }
+        if (!g_pedalEnabled) { Console.println("  enable it first: pedalon 1"); return; }
         pedal_test_counts((uint16_t)v);
-        Serial.printf("  pedal servo -> %d counts (~%.2f ms). Creep up on the limits — "
-                      "a stalled servo cooks itself.\n", v, v * 20.0 / 4096.0);
+        Console.printf("  pedal servo -> %d counts (~%.2f ms). Creep up on the limits — "
+                       "a stalled servo cooks itself.\n", v, v * 20.0 / 4096.0);
     } else if (!strncmp(line, "fire ", 5)) {
         int b, c, p;
         if (sscanf(line + 5, "%d %d %d", &b, &c, &p) != 3) {
-            Serial.println("  usage: fire <board> <channel> <pwm>"); return;
+            Console.println("  usage: fire <board> <channel> <pwm>"); return;
         }
         bool ok = manualFire((uint8_t)b, (uint8_t)c, (uint16_t)p);
-        Serial.printf("  fire board=%d ch=%d pwm=%d → %s\n",
-                      b, c, p, ok ? "OK" : "FAIL");
+        Console.printf("  fire board=%d ch=%d pwm=%d → %s\n",
+                       b, c, p, ok ? "OK" : "FAIL");
     } else if (!strncmp(line, "note ", 5)) {
         int n, v;
         if (sscanf(line + 5, "%d %d", &n, &v) != 2) {
-            Serial.println("  usage: note <midi> <velocity>"); return;
+            Console.println("  usage: note <midi> <velocity>"); return;
         }
         if (v == 0) {
             dispatchNoteOff((uint8_t)n);
@@ -1195,13 +1208,13 @@ static void handleLine(char *line) {
         // FORCE independently; the GUI handles the release timing (DURATION).
         int n, pwm;
         if (sscanf(line + 8, "%d %d", &n, &pwm) != 2) {
-            Serial.println("  usage: rawnote <midi> <pwm 0..4096>"); return;
+            Console.println("  usage: rawnote <midi> <pwm 0..4096>"); return;
         }
         if (pwm < 0) pwm = 0; if (pwm > 4096) pwm = 4096;
         bool ok = manualFireNote((uint8_t)n, (uint16_t)pwm);
-        Serial.printf("  rawnote %d pwm=%d → %s\n", n, pwm, ok ? "OK" : "no board for note");
+        Console.printf("  rawnote %d pwm=%d → %s\n", n, pwm, ok ? "OK" : "no board for note");
     } else {
-        Serial.printf("  unknown command — type 'help'\n");
+        Console.printf("  unknown command — type 'help'\n");
     }
 }
 
@@ -1218,7 +1231,7 @@ static void pollSerial() {
         if (c == '\n' || c == '\r') {
             if (s_lineLen > 0) {
                 s_lineBuf[s_lineLen] = 0;
-                handleLine(s_lineBuf);
+                handleLine(s_lineBuf, SRC_USB);
                 s_lineLen = 0;
                 linesHandled++;
             }

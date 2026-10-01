@@ -9,6 +9,8 @@
 #include "pedal.h"
 #include "config.h"
 #include "pca9685.h"
+#include "console_out.h"   // all prints: replies reach the app when a Bluetooth
+                            // command calls us; otherwise this is plain Serial
 
 // Tunables (persisted in NVS — see settings.cpp).
 bool     g_pedalEnabled    = (DEFAULT_PEDAL_ENABLED != 0);
@@ -43,18 +45,18 @@ void pedal_init() {
     s_present = false;
     s_lastProbeMs = millis();
     if (!g_pedalEnabled) {
-        Serial.println("[pedal] disabled (pedalon 1 to enable once wired)");
+        Console.println("[pedal] disabled (pedalon 1 to enable once wired)");
         return;
     }
     if (!s_pedalChip.isConnected()) {
-        Serial.printf("[pedal] no pedal board at 0x%02X — pedal features idle\n",
-                      PEDAL_PCA_ADDR);
+        Console.printf("[pedal] no pedal board at 0x%02X — pedal features idle\n",
+                       PEDAL_PCA_ADDR);
         return;
     }
     s_present = bringUp();
-    Serial.printf("[pedal] %s at 0x%02X (servo %d Hz, ch %d)\n",
-                  s_present ? "ready" : "FOUND but init FAILED",
-                  PEDAL_PCA_ADDR, PEDAL_SERVO_HZ, PEDAL_PCA_CHANNEL);
+    Console.printf("[pedal] %s at 0x%02X (servo %d Hz, ch %d)\n",
+                   s_present ? "ready" : "FOUND but init FAILED",
+                   PEDAL_PCA_ADDR, PEDAL_SERVO_HZ, PEDAL_PCA_CHANNEL);
 }
 
 // Map a CC64 value to servo counts.
@@ -79,7 +81,7 @@ static void writeCounts(uint16_t counts) {
         // re-probe below can recover it; never spin on a dead address.
         s_present = false;
         s_lastProbeMs = now;
-        Serial.println("[pedal] write failed — pedal board offline, will retry");
+        Console.println("[pedal] write failed — pedal board offline, will retry");
     }
 }
 
@@ -95,7 +97,7 @@ void pedal_tick(uint8_t cc64Value) {
             s_lastProbeMs = now;
             if (s_pedalChip.isConnected() && bringUp()) {
                 s_present = true;
-                Serial.println("[pedal] pedal board back online");
+                Console.println("[pedal] pedal board back online");
             }
         }
         return;
@@ -124,10 +126,10 @@ void pedal_test_counts(uint16_t counts) {
 }
 
 void pedal_print_status() {
-    Serial.printf("  pedal servo: %s  board=%s(0x%02X)  up=%u down=%u half=%s\n",
-                  g_pedalEnabled ? "ENABLED" : "disabled",
-                  s_present ? "online" : "absent",
-                  PEDAL_PCA_ADDR,
-                  g_pedalUpCounts, g_pedalDownCounts,
-                  g_pedalHalf ? "on" : "off");
+    Console.printf("  pedal servo: %s  board=%s(0x%02X)  up=%u down=%u half=%s\n",
+                   g_pedalEnabled ? "ENABLED" : "disabled",
+                   s_present ? "online" : "absent",
+                   PEDAL_PCA_ADDR,
+                   g_pedalUpCounts, g_pedalDownCounts,
+                   g_pedalHalf ? "on" : "off");
 }
