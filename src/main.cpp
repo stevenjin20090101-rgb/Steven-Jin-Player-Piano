@@ -654,7 +654,7 @@ static void printHelp() {
         "    off                      release everything (one ALLCALL)\n"
         "    broadcast                ALLCALL FULL_OFF (hits every PCA9685 at once)\n"
         "    panic                    EMERGENCY STOP — 5x ALLCALL + force Full Power on\n"
-        "    snappy                   lowest-latency preset (leds off, no deferral) + save\n"
+        "    snappy                   lowest-latency preset (leds off, no deferral, no humanize) + save\n"
         "    cinematic                soft/expressive preset (velocity dynamics + soft release) + save\n"
         "    save                     persist current settings to flash now\n"
         "    reset                    wipe saved settings; reboot to revert to defaults\n"
@@ -1014,11 +1014,14 @@ static void handleLine(char *line, ConsoleSource source) {
         g_minStrikeMs   = 20;       // just enough to guarantee a strike
         g_softRelease   = false;    // no release cushion / extra I2C write
         g_restrikeMs    = 0;        // no auto-tremolo
+        g_humanizeMs    = 0;        // no random note-on deferral (arrival → strike is exact)
+        g_humanizeVel   = 0;        // no random velocity scatter
         clearLedReactive();
         fill_solid(leds, LED_COUNT, CRGB::Black); FastLED.show();
         settings_save();
         Console.println("  SNAPPY preset applied + saved: leds off, fullpower, gap 0, "
-                        "minstrike 20, softrelease off, restrike off — lowest latency");
+                        "minstrike 20, softrelease off, restrike off, humantime 0, humanvel 0 "
+                        "— lowest latency");
     } else if (!strcmp(line, "cinematic")) {
         // Expressive/soft preset for subtle pieces (Interstellar, Zimmer, etc.):
         // velocity DYNAMICS on (so pp stays soft, ff swells), a gentle release
