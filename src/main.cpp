@@ -63,6 +63,11 @@ static void lvgl_render_task(void *) {
     }
 }
 
+// The Arduino loop task's stack (core default 8 KB). handleLine()'s frames
+// and, from 2.0.0, the Bluetooth update's signature check run on this task;
+// `status` prints the high-water mark so the margin is measured, not assumed.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
 LilyGo_Class amoled;
 BLEMIDI_CREATE_INSTANCE(BLE_MIDI_DEVICE_NAME, MIDI)
 
@@ -635,7 +640,10 @@ static void printHelp() {
 }
 
 static void printStatus() {
-    Serial.printf("\n  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
+    Serial.printf("\n  loop task stack: %u B never used (of %u B)\n",
+                  (unsigned)uxTaskGetStackHighWaterMark(NULL),
+                  (unsigned)getArduinoLoopTaskStackSize());
+    Serial.printf("  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
                   g_sweepStrikePWM, g_minStrikePWM, g_maxStrikePWM,
                   (unsigned long)g_maxHoldMs, g_velocityMult);
     Serial.printf("  isostrike=%lu ms (lone-note boost)  isogap=%lu ms  %s\n",
@@ -1281,7 +1289,17 @@ void setup() {
     // 8-line pollSerial budget this rides out multi-chord bursts without
     // overflow. Must be set before begin().
     Serial.setRxBufferSize(1024);
+    // No Serial write may block the loop. The USB-Serial-JTAG CDC has a 0 ms
+    // TX timeout until a host first reads, then 100 ms per write for the rest
+    // of the boot — also after the cable is pulled, or with a host attached
+    // that is not reading. A long reply (`help`, `status`, `dump` asked over
+    // Bluetooth) could then stall loop() for seconds: no NoteOff handling, no
+    // release watchdog. So: an 8 KB TX buffer (a whole `help` fits) and a
+    // zero timeout, set explicitly so the core never raises it — a full
+    // buffer drops bytes instead of waiting.
+    Serial.setTxBufferSize(8192);
     Serial.begin(115200);
+    Serial.setTxTimeoutMs(0);
     delay(200);
     Serial.println("\n[piano] boot");
     logResetReason();
