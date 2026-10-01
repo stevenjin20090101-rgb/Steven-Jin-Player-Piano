@@ -180,8 +180,12 @@ async def acceptance(stamp: pb.Stamp, scan_timeout: float) -> int:
                    f"restored -> {restored}")
 
         # --- Step 4: fire refused over Bluetooth ---
+        # BLE_SETTINGS §7 writes this step as `fire 0 0 4095`. The refusal is
+        # decided on the command word alone, so pwm 0 (a release) tests the
+        # same thing — and if the allow-list ever regressed, this script would
+        # not energize a coil.
         print("\n--- Step 4: fire refused ---")
-        await session.send("fire 0 0 4095")
+        await session.send("fire 0 0 0")
         lines = await session.collect(quiet=0.6, overall=2.0)
         refused = any("refused" in l.lower() for l in lines)
         record("Step 4 (fire refused)", refused,
