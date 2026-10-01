@@ -578,6 +578,8 @@ static void printHelp() {
         "\n  serial console commands:\n"
         "    help                     this list\n"
         "    status                   boards + PWM settings\n"
+        "    dump                     every setting as name=value lines, then end\n"
+        "    get <name>               one setting or !fact as name=value\n"
         "    off                      release everything (one ALLCALL)\n"
         "    broadcast                ALLCALL FULL_OFF (hits every PCA9685 at once)\n"
         "    panic                    EMERGENCY STOP — 5x ALLCALL + force Full Power on\n"
@@ -720,6 +722,130 @@ static void printStatus() {
     }
 }
 
+// ---- dump / get: the machine-readable settings (docs/BLE_SETTINGS.md §4) --
+//
+// One table drives both commands, in BLE_SETTINGS.md's order exactly. Each
+// row is a name, whether it is a read-only fact (printed with a leading "!"),
+// and how to write its value: integers in decimal, decimals with two places,
+// switches as 0/1. A tunable's name is the command that sets it, so the app
+// can write back `name value`. These are the ONLY lines the firmware prints
+// that start at column 0 with `name=`: the app reads every such line as a
+// value, so every other reply stays indented or [tagged].
+
+typedef void (*SettingValueFn)(char *buf, size_t len);
+
+struct SettingRow {
+    const char     *name;
+    bool            fact;
+    SettingValueFn  value;
+};
+
+// Mean per-key force multiplier over the piano's keys (MIDI 24..107) of one
+// colour — the app shows these two; per-key force stays a USB-console job.
+static float keyForceMean(bool black) {
+    float sum = 0.0f;
+    int   n   = 0;
+    for (int note = MIDI_NOTE_MIN; note <= MIDI_NOTE_MAX; note++) {
+        if (note_is_black((uint8_t)note) != black) continue;
+        sum += g_keyForceMult[note];
+        n++;
+    }
+    return n ? sum / n : 1.0f;
+}
+
+// "OK,OK,MISSING,..." — one entry per power board, MIDI 24-35 first.
+static void boardsValue(char *buf, size_t len) {
+    size_t at = 0;
+    buf[0] = 0;
+    for (int i = 0; i < kNumPowerBoards && at < len; i++) {
+        at += snprintf(buf + at, len - at, "%s%s", i ? "," : "",
+                       powerBoards[i].connected ? "OK" : "MISSING");
+    }
+}
+
+#define FACT_ROW(nm, fmt, expr) \
+    { nm, true,  [](char *b, size_t n) { snprintf(b, n, fmt, expr); } }
+#define INT_ROW(nm, expr) \
+    { nm, false, [](char *b, size_t n) { snprintf(b, n, "%ld", (long)(expr)); } }
+#define DEC_ROW(nm, expr) \
+    { nm, false, [](char *b, size_t n) { snprintf(b, n, "%.2f", (double)(expr)); } }
+#define BOOL_ROW(nm, expr) \
+    { nm, false, [](char *b, size_t n) { snprintf(b, n, "%d", (expr) ? 1 : 0); } }
+
+static const SettingRow kSettingRows[] = {
+    FACT_ROW("proto",      "%d",  1),
+    FACT_ROW("fw",         "%s",  fw_version_full()),
+    FACT_ROW("ota",        "%s",  fw_ota_word()),
+    FACT_ROW("ble",        "%d",  1),
+    { "boards", true, boardsValue },
+    FACT_ROW("i2cfails",   "%lu", (unsigned long)g_i2cFailCount),
+    FACT_ROW("pedalboard", "%s",  pedal_present() ? "online" : "absent"),
+    FACT_ROW("uptime",     "%lu", (unsigned long)(millis() / 1000)),
+    BOOL_ROW("leds",        g_ledsEnabled),
+    INT_ROW ("ledmode",     appState.ledMode),
+    INT_ROW ("ledbright",   appState.ledBrightness),
+    INT_ROW ("ledcount",    appState.ledCount),
+    INT_ROW ("ledoffset",   appState.ledOffset),
+    INT_ROW ("ledscale",    appState.ledScalePct),
+    INT_ROW ("ledtail",     appState.ledTail),
+    BOOL_ROW("ledreverse",  appState.ledReverse),
+    INT_ROW ("reactcolor",  appState.ledReactivePalette),
+    INT_ROW ("ledglow",     appState.ledGlow),
+    BOOL_ROW("velbright",   appState.ledVelBright),
+    INT_ROW ("decay",       appState.noteDecayRate),
+    INT_ROW ("rainspeed",   appState.rainbowSpeed),
+    INT_ROW ("dimsecs",     g_idleDimSecs),
+    INT_ROW ("dimfloor",    g_idleDimFloor),
+    BOOL_ROW("keyviz",      g_keyboardVizEnabled),
+    BOOL_ROW("fullpower",   g_fullPowerMode),
+    INT_ROW ("volume",      g_masterVolume),
+    DEC_ROW ("velcurve",    g_velCurve),
+    DEC_ROW ("velmult",     g_velocityMult),
+    INT_ROW ("min",         g_minStrikePWM),       // minwhite is the same variable
+    INT_ROW ("minblack",    g_minStrikePWMBlack),
+    INT_ROW ("max",         g_maxStrikePWM),
+    INT_ROW ("humanvel",    g_humanizeVel),
+    INT_ROW ("humantime",   g_humanizeMs),
+    INT_ROW ("burstgap",    g_burstGapMs),
+    INT_ROW ("burstboost",  g_burstBoostPct),
+    INT_ROW ("minstrike",   g_minStrikeMs),
+    INT_ROW ("isostrike",   g_isoStrikeMs),
+    INT_ROW ("isogap",      g_isoGapMs),
+    INT_ROW ("gap",         g_minRetriggerGapMs),
+    INT_ROW ("hold",        g_maxHoldMs),
+    INT_ROW ("restrike",    g_restrikeMs),
+    BOOL_ROW("softrelease", g_softRelease),
+    INT_ROW ("releasepwm",  g_releasePwm),
+    INT_ROW ("releasems",   g_releaseMs),
+    INT_ROW ("freq",        g_pwmFreqHz),
+    DEC_ROW ("keyforce_white", keyForceMean(false)),
+    DEC_ROW ("keyforce_black", keyForceMean(true)),
+    BOOL_ROW("pedalon",     g_pedalEnabled),
+    BOOL_ROW("pedalhalf",   g_pedalHalf),
+    INT_ROW ("pedalup",     g_pedalUpCounts),
+    INT_ROW ("pedaldown",   g_pedalDownCounts),
+};
+
+#undef FACT_ROW
+#undef INT_ROW
+#undef DEC_ROW
+#undef BOOL_ROW
+
+static void printSettingRow(const SettingRow &row) {
+    char value[64];
+    row.value(value, sizeof(value));
+    Console.printf("%s%s=%s\n", row.fact ? "!" : "", row.name, value);
+}
+
+// `get <name>`: the name with or without its "!"; nullptr when unknown.
+static const SettingRow *findSettingRow(const char *name) {
+    if (*name == '!') name++;
+    for (size_t i = 0; i < sizeof(kSettingRows) / sizeof(kSettingRows[0]); i++) {
+        if (!strcmp(kSettingRows[i].name, name)) return &kSettingRows[i];
+    }
+    return nullptr;
+}
+
 // Runs one console command. `line` is a NUL-terminated buffer the caller owns
 // (its trailing spaces are trimmed in place); `source` says where it came
 // from. Every reply goes through Console. For SRC_BLE the caller has already
@@ -739,6 +865,17 @@ static void handleLine(char *line, ConsoleSource source) {
         printHelp();
     } else if (!strcmp(line, "status")) {
         printStatus();
+    } else if (!strcmp(line, "dump")) {
+        for (size_t i = 0; i < sizeof(kSettingRows) / sizeof(kSettingRows[0]); i++) {
+            printSettingRow(kSettingRows[i]);
+        }
+        Console.println("end");
+    } else if (!strcmp(line, "get") || !strncmp(line, "get ", 4)) {
+        const char *name = line + 3;
+        while (*name == ' ') name++;
+        const SettingRow *row = findSettingRow(name);
+        if (row) printSettingRow(*row);
+        else     Console.println("  unknown setting");
     } else if (!strcmp(line, "off")) {
         allKeysOff();
         clearLedReactive();
@@ -941,7 +1078,7 @@ static void handleLine(char *line, ConsoleSource source) {
                        g_ledsEnabled ? "" : " (no FastLED work — frees ~9ms/frame under load)");
     } else if (!strncmp(line, "ledmode ", 8)) {
         int v = atoi(line + 8);
-        if (v < 0 || v >= LED_MODE_COUNT) { Console.println("  ledmode 0=off 1=static 2=rainbow 3=reactive"); return; }
+        if (v < 0 || v >= LED_MODE_COUNT) { Console.println("  ledmode out of range (0=off 1=static 2=rainbow 3=reactive)"); return; }
         appState.ledMode = (LedMode)v;
         const char *nm[] = {"OFF","STATIC","RAINBOW","NOTE-REACTIVE"};
         Console.printf("  LED mode = %s\n", nm[v]);
@@ -970,7 +1107,7 @@ static void handleLine(char *line, ConsoleSource source) {
                        appState.ledReverse ? "high-note → low-note" : "low-note → high-note");
     } else if (!strncmp(line, "reactcolor ", 11)) {
         int v = atoi(line + 11);
-        if (v < 0 || v >= REACT_PALETTE_COUNT) { Console.println("  reactcolor 0..7 (rainbow/solid/velocity/fire/ocean/forest/lava/party)"); return; }
+        if (v < 0 || v >= REACT_PALETTE_COUNT) { Console.println("  reactcolor out of range (0..7: rainbow/solid/velocity/fire/ocean/forest/lava/party)"); return; }
         appState.ledReactivePalette = (uint8_t)v;
         const char *pn[] = {"pitch-rainbow","solid","velocity","fire","ocean","forest","lava","party"};
         Console.printf("  note-reactive palette = %d (%s)\n", v, pn[v]);
