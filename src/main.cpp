@@ -35,6 +35,7 @@
 #include "power_boards.h"
 #include "settings.h"
 #include "pedal.h"
+#include "fw_info.h"
 
 // LVGL is not thread-safe. We render in a dedicated task on core 0 (away from
 // Arduino's loopTask on core 1) and protect every API call with this mutex.
@@ -640,7 +641,9 @@ static void printHelp() {
 }
 
 static void printStatus() {
-    Serial.printf("\n  loop task stack: %u B never used (of %u B)\n",
+    Serial.printf("\n  firmware %s  running %s (%s)\n",
+                  fw_version_full(), fw_running_slot(), fw_image_state_name());
+    Serial.printf("  loop task stack: %u B never used (of %u B)\n",
                   (unsigned)uxTaskGetStackHighWaterMark(NULL),
                   (unsigned)getArduinoLoopTaskStackSize());
     Serial.printf("  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
@@ -1303,6 +1306,8 @@ void setup() {
     delay(200);
     Serial.println("\n[piano] boot");
     logResetReason();
+    Serial.printf("[fw] %s  running %s  state %s\n",
+                  fw_version_full(), fw_running_slot(), fw_image_state_name());
 
     // Keep the authorship watermark in the flashed image. A volatile read
     // makes kBuildProvenance a live reference so the linker's --gc-sections

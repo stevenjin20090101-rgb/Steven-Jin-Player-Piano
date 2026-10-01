@@ -12,6 +12,11 @@
 
 #define BLE_MIDI_DEVICE_NAME "Steven Piano"
 
+// Firmware version, semver. Exactly ONE line of this form: tools/publish-firmware.sh
+// parses it. The full version string adds the git hash at build time
+// ("2.0.0+a1b2c3d", fw_version_full() in fw_info.h; docs/BLE_OTA.md §2).
+#define FW_VERSION "2.0.0"
+
 // ===========================================================================
 // BOARD REVISION SELECT — set this to match the PHYSICAL board connected.
 // ===========================================================================

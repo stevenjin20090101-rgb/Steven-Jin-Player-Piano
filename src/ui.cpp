@@ -9,6 +9,7 @@
 #include "ui.h"
 #include "config.h"
 #include "power_boards.h"   // g_pwmFreqHz, g_fullPowerMode, setAllBoardsPWMFreq
+#include "fw_info.h"        // fw_version_full() on the status line
 
 #include <lvgl.h>
 #include <Arduino.h>
@@ -954,12 +955,16 @@ void ui_init() {
 
 void ui_refresh_status() {
     if (!lbl_status) return;
+    // The firmware version rides on the BLE line ("... • 2.0.0+a1b2c3d").
+    // LV_SYMBOL_BULLET, not "·": the Montserrat fonts have U+2022 but no U+00B7.
     if (appState.bleConnected) {
-        lv_label_set_text(lbl_status, "BLE MIDI: CONNECTED");
+        lv_label_set_text_fmt(lbl_status, "BLE MIDI: CONNECTED " LV_SYMBOL_BULLET " %s",
+                              fw_version_full());
         lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x60FF60), LV_PART_MAIN);
         lv_label_set_text_fmt(lbl_peer, "Client: %s", appState.peerName.c_str());
     } else {
-        lv_label_set_text(lbl_status, "BLE MIDI: advertising...");
+        lv_label_set_text_fmt(lbl_status, "BLE MIDI: advertising... " LV_SYMBOL_BULLET " %s",
+                              fw_version_full());
         lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xFFB060), LV_PART_MAIN);
         lv_label_set_text_fmt(lbl_peer, "Pair with \"%s\"", BLE_MIDI_DEVICE_NAME);
     }
