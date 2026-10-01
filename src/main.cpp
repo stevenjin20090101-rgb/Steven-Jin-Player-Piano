@@ -37,6 +37,7 @@
 #include "pedal.h"
 #include "fw_info.h"
 #include "console_out.h"
+#include "ble_console.h"
 
 // LVGL is not thread-safe. We render in a dedicated task on core 0 (away from
 // Arduino's loopTask on core 1) and protect every API call with this mutex.
@@ -655,6 +656,7 @@ static void printStatus() {
     Console.printf("  loop task stack: %u B never used (of %u B)\n",
                    (unsigned)uxTaskGetStackHighWaterMark(NULL),
                    (unsigned)getArduinoLoopTaskStackSize());
+    ble_console_print_status(Console);
     Console.printf("  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
                    g_sweepStrikePWM, g_minStrikePWM, g_maxStrikePWM,
                    (unsigned long)g_maxHoldMs, g_velocityMult);
@@ -848,8 +850,9 @@ static const SettingRow *findSettingRow(const char *name) {
 
 // Runs one console command. `line` is a NUL-terminated buffer the caller owns
 // (its trailing spaces are trimmed in place); `source` says where it came
-// from. Every reply goes through Console. For SRC_BLE the caller has already
-// checked the Bluetooth allow-list and turned the tee's mirror on.
+// from. Every reply goes through Console. For SRC_BLE the caller (the
+// Bluetooth console) has checked the allow-list and turned the tee's mirror
+// on when the asker listens.
 static void handleLine(char *line, ConsoleSource source) {
     // Strip trailing whitespace. The line's own length — never the serial
     // reader's s_lineLen: Bluetooth lines come from a different buffer.
@@ -860,6 +863,13 @@ static void handleLine(char *line, ConsoleSource source) {
     if (len == 0) return;
 
     Console.printf("> %s\n", line);
+
+    // ble_console_poll() only passes allow-listed lines; checked again here so
+    // no future caller can run a bench command from Bluetooth by mistake.
+    if (source == SRC_BLE && !ble_console_allowed(line)) {
+        Console.println(BLE_REFUSAL);
+        return;
+    }
 
     if (!strcmp(line, "help") || !strcmp(line, "?")) {
         printHelp();
@@ -1577,6 +1587,22 @@ void setup() {
     fill_solid(leds, LED_COUNT, CRGB::Black);
     FastLED.show();
 
+    // Bluetooth: our own services FIRST, on the one shared server, THEN
+    // BLE-MIDI. MIDI.begin() ends with advertising->start(), which runs the
+    // single GATT server start; a service created after that triggers a GATT
+    // reset that registers it twice, the first time with no characteristics.
+    // MIDI.begin()'s own init() is then a no-op, createServer() returns this
+    // same server, and it installs its server callbacks as before. Never call
+    // srv->setCallbacks() here (one slot; the disconnect all-off needs it), and
+    // the advertisement stays MIDI-only (the app finds NUS by discovery).
+    NimBLEDevice::init(BLE_MIDI_DEVICE_NAME);
+    NimBLEDevice::setMTU(255);
+    NimBLEServer *srv = NimBLEDevice::createServer();
+    ble_console_setup(srv);     // Nordic UART console (docs/BLE_SETTINGS.md)
+    // >>> 2.0.0 firmware update: ble_ota_setup(srv) goes HERE — Device
+    // >>> Information + Update services (docs/BLE_OTA.md section 3), likewise
+    // >>> before MIDI.begin().
+
     MIDI.begin(MIDI_CHANNEL_OMNI);
     MIDI.setHandleNoteOn(handleNoteOn);
     MIDI.setHandleNoteOff(handleNoteOff);
@@ -1621,6 +1647,10 @@ void setup() {
             adv->start();
         }
     }
+
+    // MIDI.begin() started the GATT server: the console's characteristics
+    // must now have real attribute handles. One [ble] line either way.
+    ble_console_check();
 
     ui_init();
     ui_refresh_status();
@@ -1859,6 +1889,11 @@ void loop() {
     // Drain anything typed in the serial console (PWM tuning commands).
     pollSerial();
 
+    // Console lines that came over Bluetooth (the app's settings channel):
+    // up to 4 per pass, allow-listed, run here on core 1 like serial lines.
+    // They count as piano activity for the idle dimmer, as serial lines do.
+    if (ble_console_poll(handleLine) > 0) s_lastNoteActivityMs = millis();
+
     // Persist tunables every 30 s. Cheap when nothing changed (NVS
     // internally dedupes writes against current flash contents).
     settings_tick();
@@ -1905,6 +1940,10 @@ void loop() {
             }
         }
     }
+
+    // Send this pass's queued Bluetooth console replies (at most 8
+    // notifications; the rest go next pass). Always here, once per pass.
+    ble_console_flush();
 
     delay(1);
 }
