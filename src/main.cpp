@@ -601,7 +601,7 @@ static void printHelp() {
         "    softrelease 0|1          cushion current on release to stop the backstop clank\n"
         "    releasepwm <0..4095>     cushion current level (default 1100)\n"
         "    releasems <0..200>       cushion duration in ms (default 22)\n"
-        "    keyforce <midi> <mult>   per-key force multiplier (0.0..2.0)\n"
+        "    keyforce <midi> <mult>   per-key force multiplier (0.0..4.0)\n"
         "    keyforce_all <mult>      set every key to this multiplier\n"
         "    keyforce_white <mult>    set every white key only\n"
         "    keyforce_black <mult>    set every black key only\n"
@@ -615,7 +615,7 @@ static void printHelp() {
         "    ledcount <1..300>        physical LEDs on the strip (sets note→LED scale)\n"
         "    ledoffset <n>            fine shift the lit LED under the played key (+/-)\n"
         "    ledscale <10..400>       %% gain on note→LED spread (fix drift, fewer LEDs than keys)\n"
-        "    ledtail <n>              keep the last N LEDs dark (past keys with no solenoid)\n"
+        "    ledtail <0..255>         keep the last N LEDs dark (past keys with no solenoid)\n"
         "    ledtest <midi>           light that key's LED white for 4s (alignment calibration)\n"
         "    ledreverse 0|1           flip strip direction (high→low notes)\n"
         "    reactcolor <0..7>        reactive palette: rainbow/solid/velocity/fire/ocean/forest/lava/party\n"
@@ -1018,7 +1018,7 @@ static void handleLine(char *line, ConsoleSource source) {
     } else if (!strncmp(line, "keyforce ", 9)) {
         int note; float mult;
         if (sscanf(line + 9, "%d %f", &note, &mult) != 2) {
-            Console.println("  usage: keyforce <midi 0..127> <0.0..2.0>"); return;
+            Console.println("  usage: keyforce <midi 0..127> <0.0..4.0>"); return;
         }
         if (note < 0 || note > 127) { Console.println("  note out of range"); return; }
         if (mult < 0.0f || mult > 4.0f) { Console.println("  mult out of range (0..4)"); return; }
@@ -1128,7 +1128,8 @@ static void handleLine(char *line, ConsoleSource source) {
         Console.printf("  LED scale = %d%% (trims the note→LED drift across the keyboard)\n", v);
     } else if (!strncmp(line, "ledtail ", 8)) {
         int v = atoi(line + 8);
-        if (v < 0 || v >= LED_COUNT) { Console.println("  ledtail out of range"); return; }
+        // ledTail is a uint8_t (and dump reports 0..255): 256..299 used to wrap.
+        if (v < 0 || v > 255) { Console.println("  ledtail out of range (0..255)"); return; }
         appState.ledTail = (uint8_t)v;
         clearLedReactive();
         Console.printf("  LED tail = %d — the last %d LED(s) (past the solenoid keys) stay dark; "
@@ -1209,7 +1210,7 @@ static void handleLine(char *line, ConsoleSource source) {
         // hear whether that setting is right. The floor is the number that
         // decides how soft the piano can play: too low and the note vanishes,
         // too high and all the quiet dynamics are squashed away.
-        bool wantMax = (line[4] == 'a');            // testmAx vs testmIn
+        bool wantMax = (line[5] == 'a');            // testmAx vs testmIn (index 4 is 'm' in both)
         int note = 60;
         const char *arg = strchr(line, ' ');
         if (arg) note = atoi(arg + 1);
@@ -1303,8 +1304,15 @@ static void handleLine(char *line, ConsoleSource source) {
         Console.println("  time until every key sounds. If it's too loud, lower 'max'.");
     } else if (!strncmp(line, "pedalon ", 8)) {
         int v = atoi(line + 8);
-        g_pedalEnabled = (v != 0);
-        if (g_pedalEnabled) pedal_init(); else pedal_release();
+        if (v != 0) {
+            g_pedalEnabled = true;
+            pedal_init();
+        } else {
+            // Lift the servo FIRST: pedal_release() does nothing once the
+            // pedal is disabled, and a pedal left down keeps the piano ringing.
+            pedal_release();
+            g_pedalEnabled = false;
+        }
         Console.printf("  sustain pedal = %s\n", g_pedalEnabled ? "ENABLED" : "disabled");
     } else if (!strncmp(line, "pedalup ", 8)) {
         int v = atoi(line + 8);

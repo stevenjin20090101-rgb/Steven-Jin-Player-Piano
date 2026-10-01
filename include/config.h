@@ -332,8 +332,8 @@ struct AppState {
     uint8_t ledBrightness;     // WS2812B strip, 0-255
     uint8_t screenBrightness;  // AMOLED panel, 0-255
     uint32_t ledStaticColor;   // 0xRRGGBB
-    uint8_t rainbowSpeed;      // 1..20  (hue increment per frame)
-    uint8_t noteDecayRate;     // 1..20  (heat fade per frame in note-reactive)
+    uint8_t rainbowSpeed;      // 1..40  (hue increment per frame)
+    uint8_t noteDecayRate;     // 1..40  (heat fade per frame in note-reactive)
 
     // Physical strip layout + note-reactive palette (see DEFAULT_LED_* above)
     uint16_t ledCount;          // physical LEDs on the strip (<= LED_COUNT)

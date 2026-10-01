@@ -13,9 +13,11 @@
 // Usage:
 //   settings_load()       call ONCE in setup() before any consumer reads
 //                         a tunable (so values come from flash, not defaults).
-//   settings_save()       force an immediate save. Call from the "save"
-//                         serial command and from major events (e.g. BLE
-//                         disconnect, where the user might power off soon).
+//   settings_save()       force an immediate save. Called by the "save"
+//                         console command and the four presets. NOT on BLE
+//                         disconnect: that stop runs in loop()'s hot path,
+//                         where a blocking NVS write is kept out on purpose —
+//                         the 30 s auto-save and "save" cover persistence.
 //   settings_tick()       call from loop() — internally rate-limits to
 //                         once every 30 s, NVS-internal dedup means
 //                         unchanged values cost zero flash wear.
@@ -33,7 +35,7 @@ void settings_factory();
 
 // Crash-loop guard. Increments a NVS-backed counter at boot; after the
 // firmware has been up for >30 s without crashing, the counter resets to 0.
-// If the counter reaches 3, settings_load() forces g_fullPowerMode = true
+// If the counter reaches 3, settings_boot_inc() forces g_fullPowerMode = true
 // regardless of the saved value — gets the user out of a PWM-induced
 // crash loop without manual intervention.
 //

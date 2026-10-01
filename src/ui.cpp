@@ -722,9 +722,10 @@ static void build_cfg_popup() {
                             (void *)(uintptr_t)kPalette[i].rgb);
     }
 
-    // Speed/Decay slider (visible for Rainbow/Note-reactive)
+    // Speed/Decay slider (visible for Rainbow/Note-reactive). 1..40, the
+    // same range the `rainspeed` / `decay` console commands and the app use.
     cfg_speed_row = make_slider_row(cfg_popup, 56, "Speed",
-                                    1, 20, appState.rainbowSpeed,
+                                    1, 40, appState.rainbowSpeed,
                                     SLIDER_FMT_INT, cfg_speed_slider_cb,
                                     &cfg_speed_slider, &cfg_speed_pct_lbl);
     cfg_speed_lbl_caption = lv_obj_get_child(cfg_speed_row, 0);
