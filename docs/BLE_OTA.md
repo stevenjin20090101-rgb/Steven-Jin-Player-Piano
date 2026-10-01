@@ -1,5 +1,17 @@
 # Bluetooth firmware update — spec for the firmware
 
+> **Implemented in firmware 2.0.0 (2026-10-01)**, with corrections found while building it
+> against the linked sources. They are made in place below: §2 the version string comes from
+> `src/fw_info.cpp`; §3 the two services are created *before* `MIDI.begin()`, and the shape code
+> is the real one; §4 at most one Control frame per pass, and the session is a pure state
+> machine (`ota::Session`) proven on the Mac by `tools/ota-sim`; §6 what each return to IDLE
+> clears; §7 the dispatch layer itself refuses every energize during a session (SAFETY.md
+> rule 9); §9 condition (b) as decided in §15.3; §10 the release script's dry run; §13 the
+> two-central checks replaced (the piano stops advertising while connected); §14 fixed; §15.3
+> adopted. Nothing in §5's frames, codes or timings changed. Code: `src/ble_ota.cpp` (the glue),
+> `src/ota_session.cpp` (the session), `include/ota_pubkey.h`, `src/power_boards.cpp` (the
+> inhibit and `coilsVerifiedOff()`).
+
 **Purpose.** Let the "Steven Piano" Android app (`Player Piano/android/`) update the piano's
 firmware over the Bluetooth link it already holds. Nothing unsigned ever boots, a bad update
 rolls itself back, and every layer of `docs/SAFETY.md` stays in force during the transfer. This
@@ -66,9 +78,10 @@ env.Append(CPPPATH=[gen])
 ```
 
 **The version string** is `FW_VERSION "+" FW_BUILD`, e.g. `2.0.0+a1b2c3d`, from
-`const char *fw_version_full()` in `src/ble_ota.cpp`, the only file that includes `fw_build.h`
-(not `config.h`: every project file would recompile per commit, and `tools/dispatch-sim`
-compiles `config.h` without the generated directory). Reported identically in:
+`const char *fw_version_full()` in `src/fw_info.cpp` (`include/fw_info.h`; corrected 2026-10-01,
+this said `src/ble_ota.cpp`), the only file that includes `fw_build.h` (not `config.h`: every
+project file would recompile per commit, and `tools/dispatch-sim` compiles `config.h` without
+the generated directory). Reported identically in:
 
 | Where | What |
 |---|---|
@@ -90,53 +103,41 @@ compiles `config.h` without the generated directory). Reported identically in:
 | Advertising | **unchanged** (MIDI UUID, flags, appearance: 25 of 31 bytes); the app finds both services by discovery |
 
 The server then holds BLE-MIDI, NUS, Device Information and Update (plus NimBLE's GAP/GATT).
-Create DIS and Update in `setup()` after `MIDI.begin()` and the security calls
-(`main.cpp:1407–1436`), next to NUS, before the advertising block (`main.cpp:1443–1450`) —
-BLE_SETTINGS §1 explains why `createService()` → `resetGATT()` is harmless there. Keep
+**Create DIS and Update in `setup()` before `MIDI.begin()`** (corrected 2026-10-01; this used to
+say after it): `NimBLEDevice::init()`, `setMTU(255)`, `createServer()`, then NUS
+(`ble_console_setup`), then `ble_ota_setup(srv)`, then `MIDI.begin()`, whose advertising start
+runs the single GATT server start. A service created after that start triggers
+`serviceChanged()` → `resetGATT()`, which registers the new service twice, the first time with
+no characteristics (BLE_SETTINGS.md §1 has the whole trace). After `MIDI.begin()`,
+`ble_ota_check()` compares the Control, Data and 0x2A26 handles with the host's own table
+(`ble_gatts_find_chr`) and logs one `[ble]` line; until it passes every frame is dropped. Keep
 BLE-MIDI's server callbacks; use characteristic callbacks only.
 
-**MTU.** `NimBLEDevice::setMTU(255)` (the `nimconfig.h` default, made explicit). At BEGIN, read
-the writer's negotiated MTU with `NimBLEDevice::getServer()->getPeerMTU(conn)` (→ `ble_att_mtu()`:
-23 if the app never exchanged MTU, 0 if the link is gone); `maxChunk = min(MTU − 5, 250)` — 3
-bytes of ATT header, 2 of sequence number; 250 at MTU 255. The app requests MTU first (Android
-asks 517, NimBLE answers 255); at MTU 23 the 118-byte BEGIN arrives as a long write, which
-NimBLE reassembles (`NimBLECharacteristic.cpp:298–324`).
+**MTU.** `NimBLEDevice::setMTU(255)` (the `nimconfig.h` default, made explicit). When READY is
+due, the writer's negotiated MTU is read with `ble_att_mtu(conn)` (23 if the app never exchanged
+MTU, 0 if the link is gone: the session then ends as for a lost link); `maxChunk = min(MTU − 5,
+250)` — 3 bytes of ATT header, 2 of sequence number; 250 at MTU 255. The app requests MTU first
+(Android asks 517, NimBLE answers 255); at MTU 23 the 118-byte BEGIN arrives as a long write,
+which NimBLE reassembles (`NimBLECharacteristic.cpp:298–324`).
 
 ```cpp
-// src/ble_ota.cpp — shape; the UUIDs and kOtaPublicKey are fixed, other names are yours
-struct CtrlItem { uint16_t conn; uint8_t  len; uint8_t b[118]; };   // queue depth 4
-struct DataItem { uint16_t conn; uint16_t len; uint8_t b[252]; };   // queue depth 34 (~8.7 KB)
-static QueueHandle_t s_ctrlQ, s_dataQ;
-static NimBLECharacteristic *s_ctrl;
-static volatile uint16_t s_owner = BLE_HS_CONN_HANDLE_NONE;          // set by loop() at BEGIN
-static volatile bool s_acceptData = false, s_dataDropped = false;
+// src/ble_ota.cpp, in short (the real file has the comments)
+struct ControlItem { uint16_t conn; uint8_t  len; uint8_t b[118]; };   // static queue, depth 4
+struct DataItem    { uint16_t conn; uint16_t len; uint8_t b[252]; };   // static queue, depth 34 (8.7 KB)
+static volatile bool     s_acceptData = false, s_dataDropped = false;  // written by loop() after
+static volatile uint16_t s_owner = ota::NO_CONN;                       // every call into the session
+static DataItem s_dataIn;                                  // host-task scratch, not on its 4 KB stack
 
-struct DataCb : NimBLECharacteristicCallbacks {     // CtrlCb: the same into s_ctrlQ, no filter
-    void onWrite(NimBLECharacteristic *c, ble_gap_conn_desc *d) override {
-        if (!s_acceptData || d->conn_handle != s_owner) return;      // stale or foreign frame
-        NimBLEAttValue v = c->getValue();                            // <= max length (252)
-        DataItem it = { d->conn_handle, (uint16_t)v.length(), {0} };
-        memcpy(it.b, v.data(), it.len);
-        if (xQueueSend(s_dataQ, &it, 0) != pdTRUE) s_dataDropped = true;   // never block; ERR 4
-    }
-};
-void ble_ota_setup(NimBLEServer *srv) {   // setup(): after MIDI.begin() + security, before adv->start()
-    s_ctrlQ = xQueueCreate(4, sizeof(CtrlItem));
-    s_dataQ = xQueueCreate(34, sizeof(DataItem));
-    NimBLEDevice::setMTU(255);
-    NimBLEService *dis = srv->createService(NimBLEUUID((uint16_t)0x180A));
-    const std::pair<uint16_t, std::string> kDis[] = {               // std::string, never const char*
-        {0x2A29, "Steven Jin"}, {0x2A24, BLE_MIDI_DEVICE_NAME}, {0x2A26, fw_version_full()}};
-    for (auto &c : kDis)
-        dis->createCharacteristic(NimBLEUUID(c.first), NIMBLE_PROPERTY::READ)->setValue(c.second);
-    dis->start();
-    NimBLEService *svc = srv->createService("7D0A0001-3F5E-4B8C-9A2D-6E1F0C4B8A17");
-    s_ctrl = svc->createCharacteristic("7D0A0002-3F5E-4B8C-9A2D-6E1F0C4B8A17",
-                                       NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY, 118);
-    s_ctrl->setCallbacks(new CtrlCb());
-    svc->createCharacteristic("7D0A0003-3F5E-4B8C-9A2D-6E1F0C4B8A17", NIMBLE_PROPERTY::WRITE_NR, 252)
-       ->setCallbacks(new DataCb());
-    svc->start();
+void DataCallbacks::onWrite(NimBLECharacteristic *chr, ble_gap_conn_desc *desc) {   // NimBLE task
+    if (!s_ready || !s_acceptData || desc->conn_handle != s_owner) return;   // stale or foreign
+    NimBLEAttValue v = chr->getValue();                                       // <= 252 bytes
+    s_dataIn.conn = desc->conn_handle; s_dataIn.len = v.size(); memcpy(s_dataIn.b, v.data(), v.size());
+    if (xQueueSend(s_dataQ, &s_dataIn, 0) != pdTRUE) s_dataDropped = true;   // never block: ERR 4
+}   // ControlCallbacks: the same into the Control queue, from any connection
+void ble_ota_setup(NimBLEServer *srv) {   // setup(): after NUS, BEFORE MIDI.begin()
+    // static queues; sodium_init(); DIS 0x180A: 0x2A29 "Steven Jin", 0x2A24 BLE_MIDI_DEVICE_NAME,
+    // 0x2A26 fw_version_full() — each READ, set with std::string, never const char*; then
+    // 7D0A0001-…: Control 7D0A0002-… WRITE | NOTIFY, 118; Data 7D0A0003-… WRITE_NR, 252.
 }
 ```
 
@@ -147,6 +148,20 @@ frame into its queue with zero wait (queues are made in `setup()`, never in a ca
 Everything else — parsing, hashing, `Update`, flash, the signature, notifications, UI — runs in
 `ble_ota_tick()`, called from `loop()` after the all-off service (`main.cpp:1520–1526`) and
 before `MIDI.read()` (`main.cpp:1528`), so the safety ticks (`main.cpp:1484–1491`) come first.
+
+**The protocol is a pure state machine** (added 2026-10-01). Everything in §5–§8 that decides —
+BEGIN's checks in order, the safety wait, windows, ACKs, timeouts, END as the point of no
+return, the outbox of notifications that could not be sent yet — is `ota::Session`
+(`include/ota_session.h`, `src/ota_session.cpp`), which includes no Arduino, NimBLE or ESP
+header and reaches the device only through an `ota::Port` (clock, link, notify, safety hooks,
+flash, SHA-256, signature, restart). `tools/ota-sim` compiles it on the Mac against a fake port
+and replays §5's worked example and every row of the error table (`make check`, 53 scenarios).
+`src/ble_ota.cpp` is only the glue: the queues and the `Port`. Per pass, in this order:
+`session.tick()`; **at most one Control frame** (so BEGIN's early Ed25519 check runs at most
+once a pass; its time is logged: `[ota] signature checked at BEGIN in N ms`); Data frames until
+4,096 payload bytes have been handed over; then the Data-queue overflow, if any (ERR 4). The
+Data queue is emptied whenever the session is not receiving; the longest pass of a session is
+logged when it ends (`[ota] longest pass N ms`).
 
 - **Replies go to the writer only:** `om = ble_hs_mbuf_from_flat(buf, len); if (om) rc =
   ble_gattc_notify_custom(conn, s_ctrl->getHandle(), om);` (thread-safe host API; 1.4.3's
@@ -245,8 +260,11 @@ connection whose BEGIN was accepted — is heard; frames from other connections 
 | VERIFYING | VERIFYING sent | OK → REBOOTING; ERR 5/6/7/8 |
 | REBOOTING | OK sent | `ESP.restart()` |
 
-Every return to IDLE: `Update.abort()` (frees the buffer, erases nothing), clear the SHA context
-and both queues, restore note input, LEDs and status line, log `[ota] <reason> — update
+Every return to IDLE: `Update.abort()` (frees the buffer, erases nothing; called only while an
+update is open — before the first `Update.begin()` the library's LED-pin field is 0 and
+`abort()` would write GPIO 0), clear the SHA context and the Data queue (corrected 2026-10-01:
+Control frames are kept; the session answers or ignores each one itself, and a new BEGIN must
+not be lost), restore note input, LEDs and status line, log `[ota] <reason> — update
 abandoned, running firmware unchanged`. The partial slot is harmless: `Update` holds back an
 image's first 16 bytes until `end()` (`Updater.cpp:192–201`), so the slot starts 0xFF and cannot
 boot, and `otadata` is untouched. **END is the point of no return:** from VERIFYING on, ABORT is
@@ -287,7 +305,15 @@ reconnect ≤ 60 s, read 0x2A26 ► "2.1.0+a1b2c3d"             ≥ 30 s + a boa
 ## 7. Safety
 
 **Before READY, in this order** (the disconnect stop's all-off path, `main.cpp:1499–1506`):
-1. Block every energize source (below); `flushEventQueue(); allKeysOff(); clearLedReactive();`
+1. `set_energize_inhibit(true)` first (added 2026-10-01; SAFETY.md rule 9): from here until
+   the session ends or the piano restarts, **the dispatch layer itself refuses every
+   energize** — the strike in `fireNoteOnNow()`, the soft-release cushion in `fireNoteOffNow()`
+   (the release goes straight to the verified OFF), `manualFire()`/`manualFireNote()` with pwm
+   ≠ 0, the sweep — and `dispatchNoteOn()` returns before it touches any timer. Releases are
+   never inhibited. The dropped notes and refused commands below are the polite layer; the
+   inhibit is the guarantee, and `tools/dispatch-sim` proves it (scenarios `inhibit`,
+   `verified_off`, `verified_off_pending`). Then block the inputs (below);
+   `flushEventQueue(); allKeysOff(); clearLedReactive();`
 2. `pedal_release();`
 3. Wait ≤ 1,000 ms for **verified OFF** on every coil. The OTA adds no release logic: the normal
    passes run `tickAutoRelease()` (retry every 10 ms, ALLCALL after 4 failing passes, forced bus
@@ -305,16 +331,18 @@ reconnect ≤ 60 s, read 0x2A26 ► "2.1.0+a1b2c3d"             ≥ 30 s + a boa
 - **Notes are dropped** at the funnel, `note_input_enqueue()` (`main.cpp:307`): BLE-MIDI and
   touch keys. `MIDI.read()` keeps running (§4). **CC 120/121/123 still run the all-off path**
   (`main.cpp:367–369, 1520–1526`) and the transfer goes on.
-- **Serial and NUS energize commands are refused** (`  refused — updating firmware`): `note` with
-  velocity > 0, `rawnote`, `fire`, `sweep`, `pwm`, `ramp`, `testmin`, `testmax`, `pedaltest`.
-  `off`, `broadcast`, `panic`, `status` and the settings commands work.
+- **Serial and NUS energize commands are refused** (`  refused — updating firmware`), matched
+  as their handlers match them: `note` with a velocity other than 0 (the handler plays any),
+  `rawnote`, `fire`, `sweep`, `pwm`, `ramp`, `testmin`, `testmax`, `pedaltest`. `off`,
+  `broadcast`, `panic`, `status`, `dump`, `get`, `save` and the settings commands work.
 - **Pedal up:** `pedal_tick(ble_ota_session_active() ? 0 : g_sustainRaw)` (`main.cpp:1677`) —
   0 is UP in both pedal modes (`pedal.cpp:63–67`) and retries a failed lift.
 - **LED strip dark:** `updateLeds()` pushes one black frame, then returns. Afterwards force a full
   frame in the current mode: STATIC caches its last frame (`main.cpp:458–464`).
 - **Screen:** `lbl_status` = `Updating • 38 %` (integer, set when it changes; `"Updating "
   LV_SYMBOL_BULLET " %u %%"`), then `Updating • checking`, `Updating • restarting`, set in
-  `loop()`'s `ui_lock` block; the session counts as activity for the idle dimmer (`main.cpp:1621–1629`).
+  `loop()`'s `ui_lock` block; the session counts as activity for the idle dimmer (`main.cpp:1621–1629`),
+  and so do the outcome texts of §9 while they show.
 - **The safety ticks keep their cadence** — `tickAutoRelease()`, `tickPendingFires()`,
   `tickRestrike()` at ~100 Hz, `tickChipHealth()` every 5 s, the watchdog fed every pass. The OTA
   code must yield after its bounded work (§4) so they do: no loops or waits inside a pass (the
@@ -332,7 +360,8 @@ reconnect ≤ 60 s, read 0x2A26 ► "2.1.0+a1b2c3d"             ≥ 30 s + a boa
 
 **SAFETY.md's checklist:** no coil state cleared (rule 1); the stop is `allKeysOff()`, which wipes
 every deferred timer (2); no energize path added, `armOnAt()`'s anchoring kept (3, 4, 7, 8);
-offline believed-on coils count as ON (5); after the safety ticks, capped work (6). Tests: §13.
+offline believed-on coils count as ON (5); after the safety ticks, capped work (6); every
+energize refused by the dispatch layer for the whole session (9). Tests: §13.
 
 ## 8. Verification before anything boots
 
@@ -395,16 +424,24 @@ published BEGIN can stop the music once — no worse than CC 123 on the open MID
 - **The self-test**, while the running image is PENDING_VERIFY, evaluated every pass from
   `millis() ≥ 30000` — the point that clears the crash counter (`main.cpp:1709–1715`): (a) 30 s up
   (setup finished; no panic or task-watchdog reset), (b) at least one power board online
-  (`powerBoards[i].connected`: the image drives the I²C trunk), (c) BLE up:
+  (`powerBoards[i].connected`: the image drives the I²C trunk) — **required only when NVS
+  `boardsSeen` was set by an earlier boot** (§15.3, adopted 2026-10-01: the flag is set once, the
+  first time any power board is online on this piano, so a bench board that never saw the trunk
+  still confirms while the installed piano keeps the stronger check), (c) BLE up:
   `NimBLEDevice::getAdvertising()->isAdvertising() || appState.bleConnected`. All true →
   `esp_ota_mark_app_valid_cancel_rollback()`; on `ESP_OK` log `[ota] 2.1.0+… confirmed`, erase
   `otaPart`/`otaVer`, show **`Updated to 2.1.0`** (`FW_VERSION`) on the status line for 60 s.
   Otherwise keep checking — boards that appear later (hot-reconnect, `power_boards.cpp:707–718`)
-  still confirm it. No deadline: an image that never passes stays pending until the next reset.
+  still confirm it; what it waits for is logged once per change (`[ota] self-test waiting: …`),
+  and a mark-valid that fails is retried every 5 s. No deadline: an image that never passes stays
+  pending until the next reset. The running image's state is read once, at boot.
 - **At boot**, after `logResetReason()`: the banner of §2, from
   `esp_ota_get_running_partition()->label` and `esp_ota_get_state_partition()`. If `otaPart` names
   another slot than the running one, the update did not take: log `[ota] update to 2.1.0 (app1)
   was not confirmed — running app0`, show `Update to 2.1.0 rolled back` for 60 s, erase both keys.
+  If it names the running slot and the image is still on trial, one line says what will confirm
+  it; if the image is no longer on trial (power lost between the confirm and the erase), the
+  stale record is erased, so a later USB flash is never reported as a rollback.
 - **Crash-loop safe mode stays.** A new image that crashes before confirming never reaches it:
   the first crash rolls it back and the old image counts one crash (reset reason PANIC/WDT),
   cleared after 30 s. The restart after OK is `ESP_RST_SW`, which resets the counter. While the
@@ -499,7 +536,7 @@ macOS shows a stale service list after a USB flash, toggle its Bluetooth.
 | # | Run | Expect |
 |---|---|---|
 | 1 | one image byte flipped, original sha/sig | READY, ACKs, `82`, `E1 05`; serial: hash mismatch; the old version after a reboot |
-| 2 | one bit of `sig` flipped | `E1 06` right after BEGIN, no READY; a song playing from another central keeps playing |
+| 2 | the test client plays notes on the MIDI characteristic, then BEGIN with one bit of `sig` flipped | `E1 06` right after BEGIN, no READY; the notes keep sounding — nothing was stopped |
 | 3 | ABORT after 20 windows | `84`; the next note plays; LEDs and status line back |
 | 4 | disconnect after 20 windows | serial: update abandoned; reconnect: `0x2A26` unchanged; a new update succeeds |
 | 5 | stop sending for 11 s after 5 windows | `E1 09` |
@@ -509,35 +546,43 @@ macOS shows a stale service list after a USB flash, toggle its Bluetooth.
 | 9 | BEGIN within 30 s of run 7's restart | `E1 03` |
 
 ERR 10 needs three crash resets in a row within 30 s of boot: test it once with a temporary
-debug build, or skip it. **Bench checklist (SAFETY.md):**
-- A dense song over BLE-MIDI from the phone, BEGIN from the Mac: the piano goes silent, `E1 01`,
-  `status` shows every coil released, `i2cFails` flat. `fire 3 0 2000` on serial, BEGIN within
-  0.5 s: the coil is released (verified), then `E1 01`.
-- During a transfer: NoteOns from a second central and touch-key taps sound nothing; `fire` is
-  refused; CC 123 logs `[midi] all-notes-off serviced` and the transfer continues, as with `panic`;
-  `[hb]` every 30 s, no task-watchdog reset, `minHeap` steady; the session's longest `loop()`
-  pass (log `[ota] longest pass N ms`) well under 1 s.
+debug build, or skip it. **Bench checklist (SAFETY.md).** Corrected 2026-10-01: these checks
+used to need a second central playing a song, but the piano stops advertising while a central is
+connected, so the test client itself plays the notes:
+- The test client plays notes on the MIDI characteristic and sends BEGIN less than 500 ms later:
+  the piano goes silent, `E1 01`, `status` shows every coil released, `i2cFails` flat.
+  `fire 3 0 2000` over USB, BEGIN within 0.5 s: the coil is released (verified), then `E1 01`.
+- During a transfer: touch-key taps sound nothing; `fire` over USB is refused; CC 123 logs
+  `[midi] all-notes-off serviced` and the transfer continues, as with `panic`; `[hb]` every 30 s,
+  no task-watchdog reset, `minHeap` steady; the session's longest `loop()` pass (log
+  `[ota] longest pass N ms`) well under 1 s.
 - After every error or abort: a song plays normally, the strip is back in its mode (STATIC too),
   the status line shows the BLE state and version again.
-- `make check` in `tools/dispatch-sim` with a new scenario (strike; `allKeysOff()` with failing OFF
-  writes; `coilsVerifiedOff()` true only after a verified OFF; `lastEnergizeMs()` = the strike),
-  a full `sweep`, a dense song watching `status` → `i2cFails`, and run 8.
+- `make check` in `tools/dispatch-sim` (the update's scenarios `inhibit`, `verified_off`,
+  `verified_off_pending`, and `sweep` for the bring-up sweep) and in `tools/ota-sim`, a full
+  `sweep` on the piano, a dense song watching `status` → `i2cFails`, and run 8.
 
 ## 14. Things found while reading, to fix in the same change
 
+**All fixed in 2.0.0** (2026-10-01), as noted on each:
+
 - `testmax` behaves like `testmin`: `bool wantMax = (line[4] == 'a');` (`main.cpp:1041`) — index
-  4 is `m` in both words; test `line[5]`.
+  4 is `m` in both words; test `line[5]`. *Fixed: it tests `line[5]`.*
 - `pedalon 0` never lifts the servo: the handler clears `g_pedalEnabled`, then calls
   `pedal_release()` (`main.cpp:1135–1136`), which returns at once when the pedal is disabled
-  (`pedal.cpp:107`). Release first, then clear.
+  (`pedal.cpp:107`). Release first, then clear. *Fixed: it releases first.*
 - `-DLV_CONF_INCLUDE_SIMPLEjj` (`platformio.ini:27`) → `-DLV_CONF_INCLUDE_SIMPLE`. Harmless today
   only because LVGL 8.4 defines it itself when `lv_conf.h` is on the include path
-  (`lvgl/src/lv_conf_internal.h:22–26`; `-I .`, `platformio.ini:30`).
+  (`lvgl/src/lv_conf_internal.h:22–26`; `-I .`, `platformio.ini:30`). *Fixed differently: the
+  flag is removed. Spelled correctly on the command line it makes PlatformIO's `chain+`
+  dependency finder put the LilyGo library's own `lv_conf.h` ahead of ours on LVGL's include
+  path (16 ms refresh, a PSRAM heap); `platformio.ini` says so where the flag was.*
 - `keyforce`: `help` and the usage line say 0.0..2.0 (`main.cpp:588, 850`; the comment at
   `power_boards.h:76` too), the handlers accept 0..4 (`main.cpp:853, 864`). Say 0.0..4.0.
+  *Fixed: all three say 0.0..4.0.*
 - `settings.h:16–18` says settings save on BLE disconnect; they deliberately do not
   (`main.cpp:1496–1498`) — fix the comment. `settings.h:37` also credits `settings_load()` with
-  forcing Full Power in safe mode; it is `settings_boot_inc()`.
+  forcing Full Power in safe mode; it is `settings_boot_inc()`. *Fixed: both comments.*
 
 ## 15. Decisions on the open questions (2026-09-27, app side)
 
@@ -551,7 +596,9 @@ debug build, or skip it. **Bench checklist (SAFETY.md):**
 3. **Self-test condition (b).** Recommendation, the implementer decides: require at least one power
    board only when a persisted `boardsSeen` flag was set by an earlier boot on this piano. A bench
    board that has never seen the trunk then still confirms, while the installed piano keeps the
-   stronger check.
+   stronger check. **Adopted in 2.0.0** (2026-10-01): NVS `boardsSeen` in namespace `piano`, set
+   once, the first time any power board is online; the self-test reads the value an earlier boot
+   left (§9).
 4. **`!ota` fact adopted.** `dump` reports `!ota=none|pending|confirmed` (added to BLE_SETTINGS.md
    next to `!fw`): `none` for an image flashed over USB, `pending` until the self-test passes,
    `confirmed` after it. After a reconnect the app reads `0x2A26` and `!ota`; on `pending` it shows

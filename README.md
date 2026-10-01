@@ -62,6 +62,8 @@ DIP switch sets PCA9685 address bits A0–A2 (A3–A5 off). Boards are 0x40 (oct
 - **Touch piano** on the AMOLED with swipe-glissando, live key highlighting, and a last-notes log.
 - **Web GUI** (`gui/piano-control.html`) over USB Web Serial — every tunable as a slider, a **MIDI-file player** (drop any `.mid`, e.g. AI-generated, and the piano plays it), a **strike tester** (sweep force × duration per key), and a big **EMERGENCY STOP**.
 - **Settings over Bluetooth** (firmware 2.0.0) — a Nordic UART console beside BLE-MIDI on the same connection lets the Steven Piano Android app read and change the lighting, feel and pedal settings (`dump` / `get` / `name value`). Default-deny allow-list: bench commands (`fire`, `sweep`, `reset`, per-key force, …) stay USB-only. See [`docs/BLE_SETTINGS.md`](docs/BLE_SETTINGS.md).
+- **Firmware updates over Bluetooth** (from 2.0.0) — the app installs signed releases over the same link. Before the transfer the piano stops, refuses every energize at the dispatch layer and waits until every coil is *verified* off; it activates the new image only if its Ed25519 signature (the author key, fingerprint `eab16a502f679465`) checks out over the SHA-256 of the bytes received. The new image then has to prove itself — 30 s up, Bluetooth on, a power board online — or the bootloader rolls back to the old one at the next reset. See [`docs/BLE_OTA.md`](docs/BLE_OTA.md).
+- **A readable version** — `2.0.0+<git hash>` in the boot log, `status`, `dump`/`get !fw`, the screen's status line and Bluetooth Device Information (`0x2A26`), so you always know what is running (`FW_VERSION` in `include/config.h`).
 - **MIDI panic support** — CC 120/121/123 (All Sound/Notes Off) release everything instantly.
 
 **Making solenoids musical**
@@ -98,9 +100,11 @@ pio device monitor      # serial console @115200 (type 'help')
 2. If upload can't connect: hold **BOOT**, tap **RST**, release **BOOT**, retry.
 3. First boot: watch the serial log — all 7 boards should report `OK` and the I²C scan should list `0x40–0x46`.
 
+USB is the bench and bootstrap path: 2.0.0 goes on over USB once, and later releases can arrive over Bluetooth from the app. A release is published with `tools/publish-firmware.sh "<notes>"` (run it with `--dry-run` first; [`docs/BLE_OTA.md`](docs/BLE_OTA.md) §10).
+
 ## Serial console (or type into the web GUI)
 
-The same commands reach the piano over Bluetooth from the app, limited there to an allow-list ([`docs/BLE_SETTINGS.md`](docs/BLE_SETTINGS.md) §5).
+The same commands reach the piano over Bluetooth from the app, limited there to an allow-list ([`docs/BLE_SETTINGS.md`](docs/BLE_SETTINGS.md) §5). While a firmware update runs, every command that drives a coil (`note`, `rawnote`, `fire`, `sweep`, `pwm`, `ramp`, `testmin`/`testmax`, `pedaltest`) is refused, from either side.
 
 | Command | Purpose |
 |---|---|
@@ -132,7 +136,9 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 
 - [`tools/i2c-scanner`](tools/i2c-scanner) — standalone bus scanner; use when setting DIP addresses or debugging the trunk. Also broadcasts all-off at boot (frees any solenoid stuck by a previous crash).
 - [`tools/led-test`](tools/led-test) — minimal WS2812B color-cycle on GPIO 18+41 simultaneously to validate strip wiring independent of everything else.
-- [`tools/dispatch-sim`](tools/dispatch-sim) — host-side simulator for the solenoid dispatch state machine (`make check`); proves the hold ceiling holds under rapid same-key repeats without touching hardware.
+- [`tools/dispatch-sim`](tools/dispatch-sim) — host-side simulator for the solenoid dispatch state machine (`make check`); proves the hold ceiling holds under rapid same-key repeats, that nothing energizes during a firmware update, and that a full `sweep` releases every coil through the verified OFF — without touching hardware.
+- [`tools/ota-sim`](tools/ota-sim) — host-side simulator for the Bluetooth update session (`make check`, 53 scenarios): replays BLE_OTA.md's worked example byte for byte and every row of its error table against the real `src/ota_session.cpp`.
+- [`tools/publish-firmware.sh`](tools/publish-firmware.sh) — builds, checks, signs and publishes a firmware release for the app (`--dry-run` stops before anything is pushed).
 
 ## Troubleshooting
 
@@ -150,7 +156,7 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 ├── src/                  firmware (dispatch, safety, UI, settings, drivers)
 ├── include/              config.h (pins/BOARD_REV/tunables) + headers
 ├── gui/piano-control.html  web control panel + MIDI player (Web Serial)
-├── tools/                standalone bring-up utilities (PlatformIO projects)
+├── tools/                bring-up utilities, the two simulators, the release script
 ├── docs/SAFETY.md        fire-safety architecture — read before modifying dispatch
 ├── lv_conf.h             LVGL configuration
 └── platformio.ini        build config (LilyGo T4-S3)
