@@ -1193,8 +1193,17 @@ bool manualFireNote(uint8_t midi_note, uint16_t pwm) {
 // etc. Each strike uses PWM ≈ 2500 / 4095 ≈ 60 % duty for 150 ms (plenty
 // to actuate but not full power), then releases for 80 ms before the next.
 //
-// Total time ≈ N_boards × 12 × 230 ms (≈ 14 s for 6 boards). Set
+// Total time ≈ N_boards × 12 × 230 ms (≈ 19 s for 7 boards). Set
 // RUN_TEST_SWEEP_ON_BOOT 0 in config.h to skip.
+//
+// SAFETY (SAFETY.md rules 1 and 3): each strike arms the hold watchdog through
+// armOnAt(), and each release goes through tryChannelOff(), so a coil is "off"
+// only after a confirmed write and a failed OFF stays flagged (s_needOff). The
+// sweep blocks loop() for its whole length, so it runs the release watchdog
+// itself between keys: a flagged OFF is retried every 230 ms, and anything
+// held past g_maxHoldMs (a note that was sounding when `sweep` was typed) is
+// released, instead of both waiting ~19 s for the sweep to end.
+// tools/dispatch-sim scenario `sweep`.
 void testSweepAllBoards() {
     static const char *kNoteNames[12] = {
         "C","C#","D","D#","E","F","F#","G","G#","A","A#","B"
@@ -1220,16 +1229,21 @@ void testSweepAllBoards() {
             Serial.printf("[test]     %-2s → PCA9685 ch %2u\n",
                           kNoteNames[semitone], ch);
             b.chip.setPWM(ch, g_sweepStrikePWM);
+            armOnAt(i, semitone, millis());   // arm the hold watchdog (rule 3), landed or not
             delay(SWEEP_STRIKE_MS);
-            // Redundant release: write FULL_OFF twice with a small gap.
-            // Defends against Wire bus contention with the touch driver
-            // on core 0 — a single corrupted transaction can't leave a
-            // channel stuck if we always send the release twice.
-            b.chip.setPWM(ch, 0);
+            // Redundant release: FULL_OFF twice with a small gap, each through
+            // the verified-OFF path. Defends against Wire bus contention with
+            // the touch driver — a single corrupted transaction can't leave a
+            // channel stuck if we always send the release twice — and a write
+            // that is not ACKed leaves the channel flagged for the retry below.
+            tryChannelOff(i, semitone);
             delayMicroseconds(200);
-            b.chip.setPWM(ch, 0);
+            tryChannelOff(i, semitone);
             delay(SWEEP_RELEASE_MS);
-            // Sweep run can total ~15 s; feed the watchdog so we don't
+            // The release watchdog, which loop() cannot run while the sweep
+            // holds it: retries any flagged OFF, enforces g_maxHoldMs.
+            tickAutoRelease();
+            // Sweep run can total ~19 s; feed the watchdog so we don't
             // false-trigger a reboot mid-sweep.
             esp_task_wdt_reset();
         }

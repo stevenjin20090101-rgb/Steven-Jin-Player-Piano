@@ -46,7 +46,12 @@ never ignore those return values.
    wipes pending fires, deferred releases, cushions, and re-strike holds) —
    otherwise a queued strike could re-energize a coil *after* an emergency stop.
 3. **Every energize arms the watchdog** (`s_onAt` timestamped) — including
-   manual/test paths (`fire`, `rawnote`). Channels with no watchdog slot
+   manual/test paths (`fire`, `rawnote`) and the bring-up `sweep`. (Until
+   2.0.0 the sweep armed nothing and wrote its releases unchecked, so an OFF
+   that failed mid-sweep left a coil on with no watchdog and no retry. It now
+   strikes through `armOnAt()`, releases through `tryChannelOff()`, and runs
+   the release watchdog itself between keys, because it holds `loop()` for
+   ~19 s; `tools/dispatch-sim` scenario `sweep`.) Channels with no watchdog slot
    (unwired PCA outputs 7–10) **refuse to energize at all**. The stamp is
    anchored to the *first* energize after the last **verified** OFF and is
    never refreshed while the channel is still believed ON (`armOnAt()`), so

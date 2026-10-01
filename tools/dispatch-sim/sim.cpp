@@ -15,7 +15,9 @@
 // a verified OFF landing (the fire-safety number), plus strike/lift counts.
 // The firmware-update scenarios (inhibit, verified_off, verified_off_pending)
 // check SAFETY.md rule 9's hooks instead: no energize gets through the inhibit,
-// and coilsVerifiedOff() is true only when nothing is on or about to be.
+// and coilsVerifiedOff() is true only when nothing is on or about to be. The
+// sweep scenario checks the bring-up sweep against rule 3: armed strikes,
+// verified releases, failed OFFs retried.
 //
 //   make check          run every scenario, fail on any ceiling violation
 //   SIM_VERBOSE=1 ./sim grace     print the event/coil timeline of one scenario
@@ -30,9 +32,13 @@
 static uint32_t       g_now = 0;
 static const uint32_t T0    = 1000;   // scenario clock offset (hardware never strikes at millis()==0)
 static bool           g_verbose = getenv("SIM_VERBOSE") != nullptr;
+static void           checkVerifiedOffClaim();   // below, with the chip model
 
 uint32_t millis() { return g_now; }
-void delay(uint32_t ms) { g_now += ms; }
+// Only the bring-up sweep calls delay(). It blocks loop() on the device, so no
+// safety tick runs meanwhile; the clock steps 1 ms at a time so the "verified
+// off" claim is still checked on every simulated ms inside the sweep.
+void delay(uint32_t ms) { while (ms--) { g_now++; checkVerifiedOffClaim(); } }
 void delayMicroseconds(uint32_t) {}
 long random(long lo, long) { return lo; }          // deterministic: no humanize scatter
 SimSerial Serial;
@@ -50,9 +56,13 @@ TwoWire Wire, Wire1;
 struct SimChip { uint8_t addr; uint16_t ch[16]; uint32_t onSince[16]; uint32_t maxOn[16]; int lifts[16]; int strikes[16]; uint32_t offAt[16]; };
 static SimChip g_chips[8]; static int g_nChips = 0;
 static SimChip* chipFor(uint8_t a) { for (int i = 0; i < g_nChips; i++) if (g_chips[i].addr == a) return &g_chips[i]; return nullptr; }
-// Fault injection: every OFF write (value 0, allOff, ALLCALL) fails while now is in [from, to).
+// Fault injection: every OFF write (value 0, allOff, ALLCALL) fails while now is in [from, to),
+// or in the second window (the sweep scenario needs two: the sweep runs in one call).
 static uint32_t g_failOffFrom = 1, g_failOffTo = 0;
-static bool offWriteFails() { return g_now >= g_failOffFrom && g_now < g_failOffTo; }
+static uint32_t g_failOff2From = 1, g_failOff2To = 0;
+static bool offWriteFails() {
+    return (g_now >= g_failOffFrom && g_now < g_failOffTo) || (g_now >= g_failOff2From && g_now < g_failOff2To);
+}
 // Every setPWM() asked to drive a non-zero value, landed or not — an energize attempt.
 static int g_nonZeroWrites = 0;
 static void setChannel(SimChip& c, int ch, uint16_t v) {
@@ -100,12 +110,13 @@ static bool anyChannelOn() {
     for (int i = 0; i < g_nChips; i++) for (int ch = 0; ch < 16; ch++) if (g_chips[i].ch[ch]) return true;
     return false;
 }
+static void checkVerifiedOffClaim() { if (coilsVerifiedOff() && anyChannelOn()) g_falseOffClaims++; }
 static void ticks() { tickAutoRelease(); tickPendingFires(); tickRestrike(); }   // same order as loop()
 static void advanceTo(uint32_t t) {
     while (g_now < t) {
         g_now++;
         if (g_now % 10 == 0) ticks();
-        if (coilsVerifiedOff() && anyChannelOn()) g_falseOffClaims++;
+        checkVerifiedOffClaim();
     }
 }
 struct Ev { uint32_t t; int kind; uint8_t note; uint8_t vel; };   // kind: 0 NoteOff, 1 NoteOn, 2 serial "fire" (board 3 ch 0)
@@ -309,6 +320,72 @@ static int scenarioVerifiedOffPending() {
     return hookResult("verified_off_pending", "deferred strike: false until the stop  cushion after a watchdog cut: false until it completes  owed OFF retry: false until it lands  held in lift gap: false");
 }
 
+// The bring-up sweep (SAFETY.md rule 3): every strike arms the hold watchdog
+// through armOnAt() and every release goes through the verified OFF, so an OFF
+// that fails stays flagged and is retried like any other. Two bus faults:
+// OFF writes fail across two of board 2's releases in mid-sweep (the retry
+// between keys releases both once the bus is back), and across the last two
+// releases and the sweep's closing all-offs until 300 ms after it returns
+// (the loop's 10 ms retry releases them). The sweep blocks loop(), so no
+// safety tick runs inside it; delay() still checks coilsVerifiedOff() on every
+// simulated ms. Before 2.0.0 the sweep armed nothing and wrote its OFFs
+// unchecked: coilsVerifiedOff() said "all off" under every strike, and the
+// last two coils stayed on for good.
+static int scenarioSweep() {
+    static const uint8_t kCh[12] = {0, 15, 1, 14, 2, 3, 13, 4, 12, 5, 11, 6};   // kKeyToChannel
+    const uint32_t step = SWEEP_STRIKE_MS + SWEEP_RELEASE_MS;                      // 230 ms per key
+    auto strikeAt  = [&](int k) { return T0 + (uint32_t)k * step; };              // key k = 12 * board + semitone
+    auto releaseAt = [&](int k) { return strikeAt(k) + SWEEP_STRIKE_MS; };
+    auto chip      = [&](int k) { return chipFor((uint8_t)(0x40 + k / 12)); };
+    auto offAt     = [&](int k) { return chip(k)->offAt[kCh[k % 12]]; };
+    const int      nKeys    = 7 * 12;
+    const uint32_t sweepEnd = strikeAt(nKeys);
+    // D3, D#3 (keys 26, 27): their OFFs and the retry after D3 fail; the retry after D#3 lands.
+    g_failOffFrom  = releaseAt(26) - 5; g_failOffTo  = releaseAt(27) + 5;
+    // A#7, B7 (keys 82, 83): every OFF fails until 300 ms after the sweep has returned.
+    g_failOff2From = releaseAt(82) - 5; g_failOff2To = sweepEnd + 300;
+
+    at(0);
+    expect(coilsVerifiedOff() && !anyChannelOn(), "all off before the sweep");
+    const int writes0 = g_nonZeroWrites;
+    testSweepAllBoards();
+    expect(g_now == sweepEnd, "the sweep keeps its timing: 84 keys x (150 + 80) ms");
+    expect(g_nonZeroWrites - writes0 == nKeys, "one strike per key");
+    expect(lastEnergizeMs() == strikeAt(nKeys - 1), "every strike stamps lastEnergizeMs() (armOnAt)");
+    expect(chip(82)->ch[kCh[10]] && chip(83)->ch[kCh[11]], "A#7 and B7 still on: their OFFs failed");
+    expect(!coilsVerifiedOff(), "false while A#7 and B7 are on");
+
+    bool lateTrue = false;
+    for (uint32_t t = sweepEnd + 1; t <= sweepEnd + 1000; t++) {
+        advanceTo(t);
+        if (t < g_failOff2To && coilsVerifiedOff()) lateTrue = true;
+    }
+    expect(!lateTrue, "false until the loop's retry lands");
+    expect(coilsVerifiedOff() && !anyChannelOn(), "every coil released and verified");
+    expect(offAt(26) == strikeAt(28) && offAt(27) == strikeAt(28), "D3, D#3: released by the retry between keys once the bus was back");
+    expect(offAt(82) == g_failOff2To && offAt(83) == g_failOff2To, "A#7, B7: released by the loop's retry once the bus was back");
+
+    uint32_t longest = 0;
+    int struck = 0, strayStrikes = 0;
+    for (int b = 0; b < 7; b++) {
+        SimChip *c = chipFor((uint8_t)(0x40 + b));
+        for (int ch = 0; ch < 16; ch++) {
+            bool wired = false;
+            for (int s = 0; s < 12; s++) if (kCh[s] == ch) wired = true;
+            if (wired) { struck += c->strikes[ch] == 1 ? 1 : 0; longest = std::max(longest, c->maxOn[ch]); }
+            else strayStrikes += c->strikes[ch];
+        }
+    }
+    expect(struck == nKeys && strayStrikes == 0, "every wired channel struck exactly once, unwired ones never");
+    expect(longest <= g_maxHoldMs, "no coil past the hold ceiling");
+
+    auto rel = [&](uint32_t t) { return t ? std::to_string(t - T0) : std::string("never"); };
+    char s[240];
+    snprintf(s, sizeof s, "strikes=%d sweep=%u ms  D3,D#3 OFF failed: off=+%s (retry between keys)  A#7,B7 OFF failed past the end: off=+%s (loop retry)  longest_energized=%u ms",
+             struck, sweepEnd - T0, rel(offAt(26)).c_str(), rel(offAt(82)).c_str(), longest);
+    return hookResult("sweep", s);
+}
+
 int main(int argc, char** argv) {
     std::string sc = argc > 1 ? argv[1] : "rapid";
     initPowerBoards();
@@ -351,6 +428,8 @@ int main(int argc, char** argv) {
         return scenarioVerifiedOff();
     } else if (sc == "verified_off_pending") {   // queued strike / cushion / held note keep it false
         return scenarioVerifiedOffPending();
+    } else if (sc == "sweep") {          // the bring-up sweep: armed strikes, verified releases
+        return scenarioSweep();
     }
     fprintf(stderr, "unknown scenario '%s'\n", sc.c_str());
     return 2;
