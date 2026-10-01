@@ -16,8 +16,9 @@
 // The protocol — BEGIN's checks in order, the safety stop, windows and ACKs,
 // timeouts, END as the point of no return — is ota::Session (ota_session.h), a
 // pure state machine proven on the Mac by tools/ota-sim. This is its glue: the
-// ota::Port over NimBLE, Update, mbedTLS SHA-256 and libsodium Ed25519, and
-// the status-line text.
+// ota::Port over NimBLE, Update, mbedTLS SHA-256 and libsodium Ed25519, plus
+// what outlives one session: rollback, the self-test that confirms a new
+// image, the boot report, and the status-line texts.
 //
 // THREADING. The two write callbacks run on the NimBLE host task (core 0) and
 // only copy the frame, tagged with its connection, into a queue with zero
@@ -47,10 +48,15 @@ void ble_ota_setup(NimBLEServer *srv);
 // attribute handles and log one [ble] line. Until it passes, frames are dropped.
 void ble_ota_check();
 
+// setup(), right after the [fw] banner: reads the running image's state and
+// NVS boardsSeen, and reports an update that did not take (NVS otaPart names
+// another slot than the running one): one [ota] line, "Update to <version>
+// rolled back" on the status line for 60 s, both keys erased.
+void ble_ota_boot_report();
 
 // loop(), after the safety ticks and the all-off services, before MIDI.read():
 // the session's tick, at most one Control frame, Data frames up to 4,096
-// payload bytes.
+// payload bytes; NVS boardsSeen; the self-test that confirms a new image.
 void ble_ota_tick();
 
 // True from an accepted BEGIN until the session ends (or the piano restarts).
@@ -58,7 +64,8 @@ void ble_ota_tick();
 bool ble_ota_session_active();
 
 // The text the status line should show instead of the BLE state — the session's
-// "Updating • 38 %" while one runs — with its colour; false when none.
+// "Updating • 38 %" while one runs, then for 60 s an outcome ("Updated to
+// 2.0.1", "Update to 2.0.1 rolled back") — with its colour; false when none.
 // Loop task. No LVGL here: loop() shows it inside its ui_lock block.
 bool ble_ota_status_text(char *buf, size_t len, uint32_t *rgb);
 

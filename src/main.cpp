@@ -1559,6 +1559,9 @@ void setup() {
     logResetReason();
     Serial.printf("[fw] %s  running %s  state %s\n",
                   fw_version_full(), fw_running_slot(), fw_image_state_name());
+    // Did a Bluetooth update roll back? One [ota] line, and the status line
+    // says so for a minute (docs/BLE_OTA.md §9).
+    ble_ota_boot_report();
 
     // Keep the authorship watermark in the flashed image. A volatile read
     // makes kBuildProvenance a live reference so the linker's --gc-sections

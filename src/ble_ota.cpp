@@ -45,11 +45,24 @@ static const size_t      kDataBytesPerPass = 4096;   // at most one sector progr
 static const char *kNvsNamespace = "piano";
 static const char *kKeyOtaPart   = "otaPart";      // the slot an activated update went to
 static const char *kKeyOtaVer    = "otaVer";       // ... and its version
+static const char *kKeyBoards    = "boardsSeen";   // a power board was online once on this piano
 
+// ---- Rollback and the self-test (docs/BLE_OTA.md section 9) -----------------
+static const uint32_t kSelfTestFromMs = 30000;   // the uptime that also clears the crash counter
+static const uint32_t kNoticeMs       = 60000;   // "Updated to …" / "… rolled back" on screen
 
-// ---- Status-line colour (the BLE line is green 0x60FF60 / amber 0xFFB060) ----
+// ---- Status-line colours (the BLE line is green 0x60FF60 / amber 0xFFB060) ----
 static const uint32_t kRgbUpdating   = 0x60C0FF;
+static const uint32_t kRgbUpdated    = 0x60FF60;
+static const uint32_t kRgbRolledBack = 0xFFB060;
 
+// The Arduino core marks every image valid at startup unless the sketch
+// overrides this weak C hook (cores/esp32/esp32-hal-misc.c). Returning true
+// keeps a new image PENDING_VERIFY until the self-test below confirms it; a
+// reset of any kind before that makes the bootloader roll back. C linkage: a
+// C++ definition would be name-mangled and silently ignored (the build check
+// is `nm firmware.elf | grep -w verifyRollbackLater` showing T, not W).
+extern "C" bool verifyRollbackLater() { return true; }
 
 // ---- Frames: NimBLE host task -> loop -----------------------------------------
 struct ControlItem { uint16_t conn; uint8_t  len; uint8_t b[kControlMax]; };
@@ -127,14 +140,43 @@ static bool     s_shaOk      = false;         // shaStart() and every step since
 static bool     s_sodiumOk   = false;         // sodium_init() succeeded: else nothing verifies
 static char     s_targetSlot[17] = "";        // the slot flashBegin() opened ("app1")
 
+static bool     s_runningPending  = false;    // the running image is PENDING_VERIFY
+static bool     s_boardsSeenAtBoot = false;   // NVS boardsSeen as an earlier boot left it
+static bool     s_boardsSeenStored = false;   // set in NVS, by an earlier boot or this one
+static uint8_t  s_selfTestWaiting  = 0xFF;    // what the self-test last waited for (logged on change)
+static uint32_t s_selfTestRetryMs  = 0;       // after a failed mark-valid: not before this
+
 static char     s_sessionText[40] = "";       // "Updating • 38 %" while a session runs
+static char     s_noticeText[48]  = "";       // an outcome, shown for kNoticeMs
+static uint32_t s_noticeRgb       = 0;
+static uint32_t s_noticeSinceMs   = 0;        // when first shown; 0 = not yet
 
 static uint32_t s_passPrevMs    = 0;          // longest loop pass while a session runs
 static uint32_t s_passLongestMs = 0;
 static uint32_t s_ctrlDroppedSeen = 0;
 
+static bool anyBoardOnline() {
+    for (int i = 0; i < kNumPowerBoards; i++) {
+        if (powerBoards[i].connected) return true;
+    }
+    return false;
+}
+
 static void logLongestPass() {
     Serial.printf("[ota] longest pass %lu ms\n", (unsigned long)s_passLongestMs);
+}
+
+static void setNotice(const char *text, uint32_t rgb) {
+    snprintf(s_noticeText, sizeof s_noticeText, "%s", text);
+    s_noticeRgb     = rgb;
+    s_noticeSinceMs = 0;                       // the 60 s start when it is first shown
+}
+
+// Erases otaPart and otaVer from an open RW namespace (only the keys that exist:
+// removing a missing key logs an error).
+static void eraseUpdateRecord(Preferences &p) {
+    if (p.isKey(kKeyOtaPart)) p.remove(kKeyOtaPart);
+    if (p.isKey(kKeyOtaVer))  p.remove(kKeyOtaVer);
 }
 
 // ---- The device side of the session -------------------------------------------
@@ -158,12 +200,7 @@ public:
     }
 
     bool crashSafeMode() override { return g_crashSafeMode; }
-    bool runningImagePending() override {
-        const esp_partition_t *running = esp_ota_get_running_partition();
-        esp_ota_img_states_t state;
-        return running != nullptr && esp_ota_get_state_partition(running, &state) == ESP_OK &&
-               state == ESP_OTA_IMG_PENDING_VERIFY;
-    }
+    bool runningImagePending() override { return s_runningPending; }
 
     uint32_t slotBytes() override {
         const esp_partition_t *p = esp_ota_get_next_update_partition(NULL);
@@ -373,11 +410,116 @@ void ble_ota_check() {
     }
 }
 
+// ---- Boot report (right after the [fw] banner) ------------------------------
+void ble_ota_boot_report() {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    s_runningPending = running != nullptr &&
+                       esp_ota_get_state_partition(running, &state) == ESP_OK &&
+                       state == ESP_OTA_IMG_PENDING_VERIFY;
+
+    Preferences p;
+    if (!p.begin(kNvsNamespace, false)) {
+        Serial.println("[ota] NVS unavailable — no update record to check");
+        return;
+    }
+    s_boardsSeenAtBoot = p.getBool(kKeyBoards, false);
+    s_boardsSeenStored = s_boardsSeenAtBoot;
+
+    char part[17] = "", ver[17] = "";
+    if (p.isKey(kKeyOtaPart)) p.getString(kKeyOtaPart, part, sizeof part);
+    if (p.isKey(kKeyOtaVer))  p.getString(kKeyOtaVer, ver, sizeof ver);
+    const char *slot = fw_running_slot();
+
+    if (part[0] && strcmp(part, slot) != 0) {
+        // The update was activated but this boot runs the other slot: it
+        // crashed, lost power or failed its self-test, and the bootloader
+        // rolled back (or USB flashed over it).
+        Serial.printf("[ota] update to %s (%s) was not confirmed — running %s\n",
+                      ver[0] ? ver : "?", part, slot);
+        char text[48];
+        if (ver[0]) snprintf(text, sizeof text, "Update to %s rolled back", ver);
+        else        snprintf(text, sizeof text, "Update rolled back");
+        setNotice(text, kRgbRolledBack);
+        eraseUpdateRecord(p);
+    } else if (part[0] && s_runningPending) {
+        Serial.printf("[ota] running the update to %s in %s — it confirms itself after 30 s up "
+                      "with Bluetooth on%s; a reset before that rolls back\n",
+                      ver[0] ? ver : "?", slot,
+                      s_boardsSeenAtBoot ? " and a power board online" : "");
+    } else if (part[0]) {
+        // This slot, already confirmed (or USB flashed over it): the record
+        // outlived it, e.g. power lost between the confirm and its erase.
+        Serial.printf("[ota] stale update record (%s in %s) cleared\n", ver[0] ? ver : "?", part);
+        eraseUpdateRecord(p);
+    } else if (s_runningPending) {
+        Serial.printf("[ota] this firmware is on trial (no update record) — it confirms itself "
+                      "after 30 s up with Bluetooth on%s\n",
+                      s_boardsSeenAtBoot ? " and a power board online" : "");
+    }
+    p.end();
+}
+
 // ---- Every loop pass ----------------------------------------------------------
 
+// NVS boardsSeen, once, the first time any power board is online on this piano:
+// from the next boot on, a new image needs a board online to confirm itself
+// (BLE_OTA.md section 15.3), while a bench board that never saw the trunk
+// still can.
+static void noteBoardsSeen() {
+    if (s_boardsSeenStored || !anyBoardOnline()) return;
+    s_boardsSeenStored = true;                    // once, whether or not the write lands
+    Preferences p;
+    if (p.begin(kNvsNamespace, false)) {
+        p.putBool(kKeyBoards, true);
+        p.end();
+    }
+    Serial.println("[ota] a power board is online: new firmware will need one online to confirm itself");
+}
+
+// While the running image is PENDING_VERIFY, from 30 s of uptime, every pass:
+// (a) 30 s up, (b) a power board online — only if one was ever seen on this
+// piano before this boot, (c) Bluetooth up. All true: confirm. No deadline —
+// an image that never passes stays pending until the next reset rolls it back.
+static void selfTest(uint32_t now) {
+    if (!s_runningPending || now < kSelfTestFromMs) return;
+    if (s_selfTestRetryMs != 0 && (int32_t)(now - s_selfTestRetryMs) < 0) return;
+
+    const bool boardOk = !s_boardsSeenAtBoot || anyBoardOnline();
+    NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+    const bool bleOk = (adv != nullptr && adv->isAdvertising()) || appState.bleConnected;
+    const uint8_t waiting = (boardOk ? 0 : 1) | (bleOk ? 0 : 2);
+    if (waiting != 0) {
+        if (waiting != s_selfTestWaiting) {
+            s_selfTestWaiting = waiting;
+            Serial.printf("[ota] self-test waiting:%s%s\n",
+                          boardOk ? "" : " no power board online",
+                          bleOk ? "" : " Bluetooth neither advertising nor connected");
+        }
+        return;
+    }
+    const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err != ESP_OK) {
+        Serial.printf("[ota] could not confirm %s (%s) — trying again in 5 s\n",
+                      fw_version_full(), esp_err_to_name(err));
+        s_selfTestRetryMs = (now + 5000) ? (now + 5000) : 1;
+        return;
+    }
+    s_runningPending = false;
+    Serial.printf("[ota] %s confirmed\n", fw_version_full());
+    Preferences p;
+    if (p.begin(kNvsNamespace, false)) {
+        eraseUpdateRecord(p);
+        p.end();
+    }
+    setNotice("Updated to " FW_VERSION, kRgbUpdated);
+}
+
 void ble_ota_tick() {
-    if (!s_ready) return;
     const uint32_t now = millis();
+    noteBoardsSeen();
+    selfTest(now);
+    if (!s_ready) return;
 
     // The longest pass while a session runs: from one call to the next.
     const bool wasActive = s_session.active();
@@ -448,6 +590,16 @@ bool ble_ota_status_text(char *buf, size_t len, uint32_t *rgb) {
         snprintf(buf, len, "%s", s_sessionText);
         if (rgb) *rgb = kRgbUpdating;
         return true;
+    }
+    if (s_noticeText[0]) {
+        const uint32_t now = millis();
+        if (s_noticeSinceMs == 0) s_noticeSinceMs = now ? now : 1;
+        if (now - s_noticeSinceMs < kNoticeMs) {
+            snprintf(buf, len, "%s", s_noticeText);
+            if (rgb) *rgb = s_noticeRgb;
+            return true;
+        }
+        s_noticeText[0] = '\0';
     }
     return false;
 }
