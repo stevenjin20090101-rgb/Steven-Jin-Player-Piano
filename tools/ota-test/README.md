@@ -125,7 +125,7 @@ pass. It restores `ledbright` and never moves a solenoid.
 | 1 | *(bench, not scriptable)* connect over MIDI, confirm the iPad still plays while services are discovered | done by hand with the iPad; `console_client.py dump` shows the console is present. |
 | 2 | `dump`, timed | the full list arrives, ends with `end`, within the 2 s app limit (300 ms is the target); `!proto=1` present; every §4 name present in order. PASS. |
 | 3 | `get ledbright`, write a different value, `get`, restore | the written value reads back, then the original is restored. PASS. |
-| 4 | `fire 0 0 4095` over NUS | a reply containing `refused`; nothing fires (the firmware default-denies it over Bluetooth). PASS. |
+| 4 | `fire 0 0 0` over NUS (pwm 0, so the script could not energize a coil even if the refusal were broken; the spec's `fire 0 0 4095` is refused on the same command word) | a reply containing `refused` (the firmware default-denies it over Bluetooth). PASS. |
 | 5 | 50 `get !proto` lines in one burst | all 50 answered. PASS. |
 | 6 | disconnect mid-`dump`, reconnect, clean `dump` | the reconnect `dump` ends with `end`. PASS. |
 | 7 | unsubscribe from TX, send `status` | nothing is queued. PASS. |
