@@ -23,6 +23,28 @@ ceiling under repeated `fire` commands (`manual_refire`), and plain regression
 checks (`rearticulate`, `long_note`, `orphan`). Add a scenario whenever you
 touch the dispatch path.
 
-Limits: one note (C4 / board 3 / channel 0), a perfectly regular tick, and a
-fault model that can only fail OFF writes. It exercises the state machine, not
-the I²C layer.
+The firmware-update hooks (SAFETY.md rule 9, [`docs/BLE_OTA.md`](../../docs/BLE_OTA.md) §7)
+have their own three:
+
+- `inhibit` — five coils on board 3 energized, then `set_energize_inhibit(true)`
+  and 2.5 s of NoteOns, `fire`, `rawnote`, held-note re-strike ticks and sweeps
+  on every board. Every attempt must be refused with **zero non-zero PWM
+  writes**, and each coil must still be released by the path that owns it: the
+  hold watchdog (through a glitched OFF and its retry), the re-strike lift, a
+  NoteOff (straight to OFF, no cushion), a deferred release, `allKeysOff()`.
+- `verified_off` — strike, then `allKeysOff()` while every OFF write fails:
+  `coilsVerifiedOff()` stays false until the watchdog's retry lands, and
+  `lastEnergizeMs()` is the strike. Then a coil on a board that dropped
+  offline: false until the health tick's verified per-chip all-off.
+- `verified_off_pending` — every coil verified off, yet a deferred strike, a
+  cushion the watchdog overtook, an OFF still owed, or a held note between
+  re-strikes keeps it false until cleared.
+
+Every scenario also asks `coilsVerifiedOff()` on every simulated millisecond
+and fails if it ever says "all off" while a simulated channel is on.
+
+Limits: a perfectly regular tick, chips that always answer (an offline board is
+its `connected` flag cleared), and a fault model that can only fail OFF writes
+(it also counts every non-zero write). The
+original ten scenarios watch one note (C4 / board 3 / channel 0). It exercises
+the state machine, not the I²C layer.
