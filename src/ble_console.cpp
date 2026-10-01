@@ -193,9 +193,9 @@ static uint16_t s_frameLeft = 0;                        // payload still in the 
 static uint8_t  s_stage[64];
 static uint8_t  s_stageLen = 0, s_stagePos = 0;
 
-static char     s_line[80];
-static uint8_t  s_lineLen  = 0;
-static uint16_t s_lineConn = BLE_HS_CONN_HANDLE_NONE;   // who the half line is from
+static char     s_rxLine[80];
+static uint8_t  s_rxLineLen  = 0;
+static uint16_t s_rxLineConn = BLE_HS_CONN_HANDLE_NONE;   // who the half line is from
 
 // The next received byte and the connection that wrote it; false when nothing
 // is waiting.
@@ -220,7 +220,7 @@ static bool nextByte(uint8_t &c, uint16_t &conn) {
     return true;
 }
 
-// Assembles the next complete line into s_line; false when none is waiting.
+// Assembles the next complete line into s_rxLine; false when none is waiting.
 // Ends on "\n" or "\r"; empty lines are skipped; a line longer than the buffer
 // keeps its first 79 characters (as on USB). A half line is dropped when bytes
 // from another connection arrive: a line comes from one writer.
@@ -228,20 +228,20 @@ static bool nextLine(uint16_t &conn) {
     uint8_t  c;
     uint16_t from;
     while (nextByte(c, from)) {
-        if (from != s_lineConn) {
-            s_rxCut += s_lineLen;
-            s_lineLen = 0;
-            s_lineConn = from;
+        if (from != s_rxLineConn) {
+            s_rxCut += s_rxLineLen;
+            s_rxLineLen = 0;
+            s_rxLineConn = from;
         }
         if (c == '\n' || c == '\r') {
-            if (s_lineLen > 0) {
-                s_line[s_lineLen] = 0;
-                s_lineLen = 0;
-                conn = s_lineConn;
+            if (s_rxLineLen > 0) {
+                s_rxLine[s_rxLineLen] = 0;
+                s_rxLineLen = 0;
+                conn = s_rxLineConn;
                 return true;
             }
-        } else if (s_lineLen < sizeof(s_line) - 1) {
-            s_line[s_lineLen++] = (char)c;
+        } else if (s_rxLineLen < sizeof(s_rxLine) - 1) {
+            s_rxLine[s_rxLineLen++] = (char)c;
         }
     }
     return false;
@@ -252,25 +252,25 @@ static bool nextLine(uint16_t &conn) {
 static uint16_t s_txConn  = BLE_HS_CONN_HANDLE_NONE;
 static uint32_t s_txSince = 0;
 
-// A complete line waiting in s_line (see ble_console_poll), and its writer.
-// While one waits, nextLine() is not called, so s_line stays intact.
-static bool     s_lineHeld = false;
-static uint16_t s_heldConn = BLE_HS_CONN_HANDLE_NONE;
+// A complete line waiting in s_rxLine (see ble_console_poll), and its writer.
+// While one waits, nextLine() is not called, so s_rxLine stays intact.
+static bool     s_rxLineHeld = false;
+static uint16_t s_rxHeldConn = BLE_HS_CONN_HANDLE_NONE;
 
 int ble_console_poll(ConsoleLineHandler handle) {
     if (s_rxStream == nullptr) return 0;
     int handled = 0;
     while (handled < kMaxLinesPerPass) {
-        if (!s_lineHeld) {
+        if (!s_rxLineHeld) {
             uint16_t conn;
             if (!nextLine(conn)) break;
-            size_t len = strlen(s_line);            // trim like handleLine does
-            while (len > 0 && s_line[len - 1] == ' ') s_line[--len] = 0;
+            size_t len = strlen(s_rxLine);            // trim like handleLine does
+            while (len > 0 && s_rxLine[len - 1] == ' ') s_rxLine[--len] = 0;
             if (len == 0) continue;
-            s_lineHeld = true;
-            s_heldConn = conn;
+            s_rxLineHeld = true;
+            s_rxHeldConn = conn;
         }
-        uint16_t conn  = s_heldConn;
+        uint16_t conn  = s_rxHeldConn;
         uint32_t since = subscribedSince(conn);
 
         // Replies go to the asker, and only while it listens on TX. The ring
@@ -282,7 +282,7 @@ int ble_console_poll(ConsoleLineHandler handle) {
             if (s_txSince != 0 && subscribedSince(s_txConn) == s_txSince) break;
             Console.discard();
         }
-        s_lineHeld = false;
+        s_rxLineHeld = false;
         handled++;
         if (since != 0) {
             s_txConn  = conn;
@@ -292,12 +292,12 @@ int ble_console_poll(ConsoleLineHandler handle) {
 
         // testmin / testmax / panic hold the loop (delay()); after one,
         // nothing else runs this pass.
-        bool endsPass = commandIs(s_line, "testmin") || commandIs(s_line, "testmax") ||
-                        commandIs(s_line, "panic");
-        if (ble_console_allowed(s_line)) {
-            handle(s_line, SRC_BLE);
+        bool endsPass = commandIs(s_rxLine, "testmin") || commandIs(s_rxLine, "testmax") ||
+                        commandIs(s_rxLine, "panic");
+        if (ble_console_allowed(s_rxLine)) {
+            handle(s_rxLine, SRC_BLE);
         } else {
-            Console.printf("> %s\n", s_line);
+            Console.printf("> %s\n", s_rxLine);
             Console.println(BLE_REFUSAL);
         }
         Console.setMirror(false);
