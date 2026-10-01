@@ -360,15 +360,16 @@ static void handleNoteOff(byte channel, byte note, byte velocity) {
     note_input_enqueue(0, note, 0, /*from_ble=*/true);
 }
 
-// Set by handleControlChange (NimBLE core 0) when the app sends a MIDI
-// panic; serviced by loop() on core 1 (same reason as the disconnect stop —
-// keep the release sequential with dispatch, off the BLE callback).
+// Set by handleControlChange (which MIDI.read() runs on the loop task) when
+// the app sends a MIDI panic; serviced at the top of the next loop() pass,
+// with the disconnect stop, so the release stays sequential with dispatch.
 static volatile bool g_requestAllOff = false;
 
 // --- Sustain-pedal (CC64) state -------------------------------------------
-// Written by handleControlChange on the NimBLE task (core 0), read by loop()
-// on core 1. Plain volatiles: each is a single byte/bool, and nothing here
-// drives hardware — a torn read at worst logs one stale value.
+// Written by handleControlChange, read by loop(). (BLE-MIDI's NimBLE callback
+// only queues the raw bytes; MIDI.read() parses them and runs the handlers on
+// the loop task.) Plain volatiles: each is a single byte/bool, and nothing
+// here drives hardware — a torn read at worst logs one stale value.
 // g_pedalSeen answers the practical question "does this song/app actually
 // send pedal data?" without needing any pedal hardware attached.
 static volatile uint8_t g_sustainRaw      = 0;      // last CC64 value, 0..127
@@ -376,6 +377,19 @@ static volatile bool    g_sustainDown     = false;  // >=64 = pedal down
 static volatile bool    g_pedalEventDirty = false;  // a transition to log
 static volatile bool    g_pedalSeen       = false;  // any pedal CC ever seen
 static volatile uint32_t g_pedalCcCount   = 0;      // total pedal CCs received
+
+// Every stop that lifts the pedal (disconnect, CC 120/121/123, `off`, `panic`,
+// a firmware update) also forgets the last CC64: otherwise pedal_tick() in
+// loop() presses the pedal again a few passes after pedal_release() — e.g. an
+// app killed with the pedal down would leave the piano ringing. The next CC64
+// the source sends sets it again. For CC 120/121/123 it happens as the CC is
+// parsed, in order with the source's messages: loop() parses up to 32 a pass,
+// so a CC64 sent right after the all-off is parsed before the all-off is
+// serviced, and must not be wiped. Loop task (MIDI.read() runs the handlers).
+static void forgetSustain() {
+    g_sustainRaw  = 0;
+    g_sustainDown = false;
+}
 
 static void handleControlChange(byte channel, byte cc, byte value) {
 #if DEBUG_MIDI_PRINT
@@ -387,6 +401,7 @@ static void handleControlChange(byte channel, byte cc, byte value) {
     // for the g_maxHoldMs watchdog on every held note.
     if (cc == 120 || cc == 121 || cc == 123) {
         g_requestAllOff = true;
+        forgetSustain();       // the all-off lifts the pedal; a later CC64 still counts
     }
 
     // --- Piano pedals ------------------------------------------------------
@@ -394,8 +409,8 @@ static void handleControlChange(byte channel, byte cc, byte value) {
     // sostenuto, CC67 una corda/soft. Standard MIDI: <64 = up, >=64 = down;
     // the raw 0..127 value also carries HALF-pedalling for actuators that can
     // hold an intermediate position.
-    // Captured here on the NimBLE task (core 0) as plain volatiles; loop()
-    // on core 1 consumes them. No actuator is driven from this callback.
+    // Captured here as plain volatiles; loop() applies them through
+    // pedal_tick(). No actuator is driven from this callback.
     if (cc == 64 || cc == 66 || cc == 67) {
         if (cc == 64) {
             g_sustainRaw = value;
@@ -579,6 +594,7 @@ void piano_stop_for_update() {
     allKeysOff();            // release every coil, wipe every deferred strike/release/cushion
     clearLedReactive();      // no sustained LEDs
     pedal_release();         // dampers down: the piano stops ringing
+    forgetSustain();         // ... and it stays up after the update
     if (g_ledsEnabled) {     // the strip goes dark for the whole session
         fill_solid(leds, LED_COUNT, CRGB::Black);
         FastLED.show();
@@ -973,6 +989,7 @@ static void handleLine(char *line, ConsoleSource source) {
         allKeysOff();
         clearLedReactive();
         pedal_release();          // pedal up → dampers drop → ringing stops
+        forgetSustain();          // and stays up
         Console.println("  all keys released (per-board + ALLCALL)");
     } else if (!strcmp(line, "broadcast")) {
         broadcastAllOff();
@@ -985,6 +1002,7 @@ static void handleLine(char *line, ConsoleSource source) {
         allKeysOff();
         clearLedReactive();
         pedal_release();          // dampers down — stop the ringing too
+        forgetSustain();          // and stays up
         g_fullPowerMode = true;
         Console.println("  PANIC: all solenoids released, Full Power forced ON");
     } else if (!strcmp(line, "snappy")) {
@@ -1808,6 +1826,7 @@ void loop() {
         allKeysOff();            // release outputs + clear every deferred timer
         clearLedReactive();      // and drop any sustained LEDs
         pedal_release();         // lift the pedal or the piano rings on
+        forgetSustain();         // ... and keep it lifted until a source sends CC64 again
         Serial.println("[BLE] disconnect stop serviced on core 1");
     }
 
@@ -1827,7 +1846,8 @@ void loop() {
         g_requestAllOff = false;
         allKeysOff();
         clearLedReactive();      // held LEDs release on all-notes-off too
-        pedal_release();         // CC120/121/123 releases the pedal as well
+        pedal_release();         // CC120/121/123 releases the pedal as well (the
+                                 // stored CC64 was forgotten as the CC was parsed)
         Serial.println("[midi] all-notes-off serviced");
     }
 
