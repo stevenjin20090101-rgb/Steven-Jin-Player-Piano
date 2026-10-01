@@ -1838,7 +1838,13 @@ void loop() {
     // every pass during an update (notes are dropped at the funnel).
     ble_ota_tick();
 
-    MIDI.read();   // populates eventQ via our handleNoteOn/Off callbacks
+    // Read every MIDI message waiting, up to 32 a pass (each read() parses one
+    // and runs our handleNoteOn/Off/CC callbacks, which fill eventQ). One read
+    // a pass spread a chord sent in one BLE packet over one pass per note, and
+    // the library's 64-byte queue (about 21 messages) blocks the NimBLE task
+    // when it is full: a chord now reaches dispatch in one pass. The event
+    // drain below keeps its own cap of 24, and delay(1) at the end stays.
+    for (int i = 0; i < 32 && MIDI.read(); i++) {}
 
     // Drain events for solenoid dispatch. CAP per iteration so a burst can't
     // monopolize the core with back-to-back blocking I²C writes and starve
