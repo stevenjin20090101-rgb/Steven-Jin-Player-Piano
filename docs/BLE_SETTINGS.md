@@ -1,5 +1,13 @@
 # Bluetooth settings channel — spec for the firmware
 
+> **Implemented in firmware 2.0.0 (2026-10-01)**, with corrections found while building it
+> against the linked sources. They are made in place below:
+> §1 the NUS service is created *before* `MIDI.begin()`; §2 four lines per loop pass in the
+> console's own buffer; §3 replies are mirrored only to the Bluetooth client that asked, sent
+> with the checked low-level notify; §4 `!fw` is the version string and `get` takes names with
+> or without `!`; §5 the allow-list is default-deny and refusals use fixed words; §8 is fixed.
+> Code: `src/ble_console.cpp`, `src/console_out.cpp`, `handleLine()` in `src/main.cpp`.
+
 **Purpose.** Let the "Steven Piano" Android app (`Player Piano/android/`) read and adjust
 the piano's lighting, feel, and pedal settings over Bluetooth, using the *existing* serial
 console commands. Today those commands are reachable only over USB serial and the Web
@@ -25,14 +33,21 @@ Add the standard Nordic UART Service (NUS) to the same NimBLE server that BLE-MI
 
 Implementation notes (NimBLE 1.4.3, the version that is linked):
 
-- `NimBLEDevice::createServer()` / `getServer()` return the one shared server, so the
-  NUS service can be created right after `MIDI.begin(...)` in `setup()`. Creating a
-  service after the server has started triggers `serviceChanged()` → `resetGATT()`,
-  which is harmless at boot (no client connected yet) but restarts advertising; do it
-  before the firmware's own `advertising->start()` call.
+- **Create the NUS service before `MIDI.begin()`, not after** (corrected 2026-10-01; this
+  note used to say "right after"). `MIDI.begin()` ends with `advertising->start()`, which
+  runs the single GATT server start (`NimBLEAdvertising.cpp:428`). A service created after
+  that runs `serviceChanged()` → `resetGATT()`, which calls `start()` on every service —
+  including the new one, which has no characteristics yet — and the real `start()` later
+  reuses that empty definition, so the service ends up registered twice, the first time
+  empty. `setup()` therefore does: `NimBLEDevice::init(name); NimBLEDevice::setMTU(255);
+  srv = NimBLEDevice::createServer();` → create and `start()` NUS on `srv` → then
+  `MIDI.begin()` (its `init()` is then a no-op, `createServer()` returns the same server,
+  and its `advertising->start()` runs the one GATT start). After that, the firmware checks
+  that RX and TX have real attribute handles and logs one `[ble]` line. MIDI's own handles
+  move once with 2.0.0; clients rediscover on each connection.
 - Keep the library's `MyServerCallbacks` as the server callback (there is one slot; the
-  firmware's connect/disconnect handling depends on it). Use *characteristic* callbacks
-  for NUS RX and for the TX CCCD subscribe.
+  firmware's connect/disconnect handling depends on it): never call `srv->setCallbacks()`.
+  Use *characteristic* callbacks for NUS RX and for the TX CCCD subscribe.
 - The connect/disconnect stop logic stays exactly as it is: any disconnect still runs the
   full all-off. NUS shares the single connection with MIDI; the app opens one link.
 
@@ -40,24 +55,45 @@ Implementation notes (NimBLE 1.4.3, the version that is linked):
 
 `onWrite` for NUS RX runs on the NimBLE host task (core 0). It must **only append the
 received bytes to a FreeRTOS byte queue** (≥ 512 bytes; drop with a counter when full,
-never block). The main `loop()` drains that queue into the same line machinery
-`pollSerial()` uses (`s_lineBuf[80]`, end on `\n` or `\r`, ≤ 8 lines per pass) and calls
-`handleLine()` on core 1, exactly as serial input does. Solenoid dispatch, I²C, LEDs and
-the safety watchdogs must stay on the loop.
+never block). As built: a 1 KB stream buffer; each write goes in whole or not at all, as
+one frame tagged with the connection that wrote it. The main `loop()` drains that queue
+into the console's **own** 80-byte line buffer (never the serial reader's `s_lineBuf`;
+end on `\n` or `\r`, blank lines skipped, 79 characters kept of a longer line as on USB)
+and calls `handleLine(line, SRC_BLE)` on core 1, as serial input does, **at most 4 lines
+per pass**; a line whose command is `testmin`, `testmax` or `panic` (they block for
+150–200 ms) ends that pass. Solenoid dispatch, I²C, LEDs and the safety watchdogs stay on
+the loop. Bluetooth lines count as activity for the screen's idle dimmer, like serial
+lines.
 
 ## 3. Output: a tee that mirrors console replies to NUS TX
 
 `handleLine()` and the functions it calls print replies straight to `Serial`. Add a
-`Print` subclass (a tee) whose `write()` goes to `Serial` **and**, while an NUS client is
-subscribed to TX, into a TX ring buffer (≥ 4 KB; `help` is ~4 KB). Route every reply
-that a command produces through it: the `  …` reply lines in `handleLine`, the
-`[settings]`, `[vol]`, `[pedal]` and `[test]` lines printed by the functions it calls,
-and the `> line` echo (the app ignores lines starting with `> `). Heartbeats, boot
-banners and debug chatter stay on serial only.
+`Print` subclass (a tee) whose `write()` goes to `Serial` **and** into a TX ring buffer
+(8 KB; `help` is ~5.2 KB). Route every reply that a command produces through it: the
+`  …` reply lines in `handleLine`, `help`, `status`, the `[settings]` and `[pedal]` lines
+printed by the functions it calls, and the `> line` echo (the app ignores lines starting
+with `> `). Heartbeats, boot banners and debug chatter stay on serial only.
 
-The loop flushes the TX ring as notifications: chunks of at most `MTU − 3` bytes, at
-most 8 notifications per loop pass, in order, lines ending in `\n` (a chunk may split a
-line; the app reassembles). When no client is subscribed, the ring is discarded.
+**Replies go to the asker** (corrected 2026-10-01). The tee copies into the ring only the
+output produced while a line that arrived over NUS is being handled, and only when the
+connection that wrote it is subscribed to TX (a mirror flag around that `handleLine` call).
+USB commands are never mirrored — the web GUI's MIDI player streams `note` lines, and the
+app would take someone else's `dump` for its own. NUS commands still print to Serial as
+well. With no subscriber nothing is queued. The ring holds one asker's reply at a time.
+As built, `[vol]` (from `set_master_volume()`) and `[test]` (from the sweep, refused over
+NUS anyway) stay Serial-only: they come from `power_boards.cpp`, which the dispatch
+simulator compiles without the tee. The app re-reads `fullpower` after a `volume` write.
+When a reply does not fit in the ring, it is cut at a line boundary (counted in `status`).
+
+The loop flushes the TX ring once per pass, near the end of `loop()`, as notifications to
+the asking connection: chunks of at most `MTU − 3` bytes, at most 8 notifications per loop
+pass, in order, lines ending in `\n` (a chunk may split a line; the app reassembles). It
+uses the **checked low-level send** (corrected 2026-10-01): `ble_hs_mbuf_from_flat()`
+then `ble_gattc_notify_custom()`, never `NimBLECharacteristic::notify()`, which in 1.4.3
+neither checks the mbuf nor the return code. It stops for the pass while fewer than 5
+mbufs are free (the stack's own ATT responses come from the same 12-block pool); any
+failure keeps the bytes for the next pass. When the asker disconnects, unsubscribes or
+comes back as a new subscription, the ring is discarded.
 
 ## 4. Two new commands: `dump` and `get`
 
@@ -70,7 +106,7 @@ Read-only facts are prefixed `!`. Exact list and order:
 
 ```
 !proto=1
-!fw=<git short hash or build date>
+!fw=<the version string, e.g. 2.0.0+a1b2c3d (BLE_OTA.md section 2)>
 !ota=<none|pending|confirmed>      (the running image's update state, see BLE_OTA.md section 9: none = flashed over USB, pending = not yet confirmed, confirmed = self-test passed)
 !ble=1
 !boards=OK,OK,MISSING,OK,OK,OK,OK          (7 entries, MIDI 24-35 first)
@@ -126,27 +162,48 @@ end
 `minwhite` is the same variable as `min`; dump reports it once, as `min`.
 
 **`get <name>`** prints the single `name=value` line for any name in the list above
-(including the `!` facts), or `  unknown setting` for anything else. The app uses `get`
+(including the `!` facts), or `  unknown setting` for anything else. The name may be given
+with or without its `!`; a fact is always answered as `!name=value` (`get fw` and
+`get !fw` both print `!fw=…`). The app uses `get`
 after each write to show what the piano actually holds, and `dump` on connect and after
 a preset.
+
+`dump` and `get` are the only firmware output that starts a line at column 0 with
+`name=`: the app reads every line matching `^!?[a-z][a-z0-9_]*=` as a value, so all other
+replies stay indented or `[tagged]`. As built, one table in `main.cpp` drives both
+commands in the order above; `keyforce_white` / `keyforce_black` are the mean multiplier
+over the white / black keys of MIDI 24..107.
 
 Both commands are plain console commands: they also work over USB serial and are
 listed in `help`.
 
 ## 5. Allow-list over Bluetooth
 
-Everything in `dump` can be set over NUS with `name value`, and these commands are
-allowed as well: `status`, `dump`, `get`, `help`, `off`, `panic`, `save`, `ledtest`,
-`testmin`, `testmax`, `note`, and the presets `soft`, `cinematic`, `expressive`,
-`snappy`.
+**Default deny** (corrected 2026-10-01: the list below is what is *allowed*; everything
+else is refused). Allowed over NUS: `name value` for every tunable in `dump` except
+`keyforce_white` / `keyforce_black`; `minwhite` (the same variable as `min`); and the
+commands `status`, `dump`, `get`, `help`, `?`, `off`, `broadcast`, `panic`, `save`,
+`ledtest`, `testmin`, `testmax`, `note`, and the presets `soft`, `cinematic`,
+`expressive`, `snappy`. A line's command is its first word, compared exactly.
 
-Refused over NUS with the reply `  refused over Bluetooth — use the USB console`:
+Everything else — known or not — is refused over NUS with the reply
+`  refused over Bluetooth — use the USB console` (after the `> line` echo), so a command
+added to the firmware later stays bench-only until someone allows it. Today that refuses
 `fire`, `rawnote`, `sweep`, `pwm`, `ramp`, `reset`, `blereset`, `pedaltest`, `keyforce`,
-`keyforce_all`, `keyforce_white`, `keyforce_black`, `waterfall`. (Bench and destructive
-commands stay at the bench; per-key force is not in scope for the app yet.)
+`keyforce_all`, `keyforce_white`, `keyforce_black`, `waterfall` and any unknown word.
+(Bench and destructive commands stay at the bench; per-key force is not in scope for the
+app yet.)
 
-Implement the check in the NUS path before `handleLine` (a `fromBle` flag); the serial
-path is unchanged.
+The check is in the NUS path before `handleLine`, and `handleLine(line, SRC_BLE)` checks
+again; the serial path is unchanged.
+
+**Reply wording is part of the contract** (added 2026-10-01). The app treats any reply line
+containing `out of range`, `usage:`, `unknown` or `refused` (any case) as a refusal of its
+last write. Every refusal of a setting write or of a command's arguments that is reachable
+over NUS contains one of those words (2.0.0 fixed `ledmode` and `reactcolor`, which did
+not), and no success reply contains them. Two runtime failures do not use them and so are
+not shown as refusals by the app: `testmin`/`testmax` on a key whose power board is offline
+(`  no board for that note …`) and a failed NVS open on `save` (`[settings] save FAILED …`).
 
 ## 6. Persistence and side effects (unchanged, but the app relies on them)
 
@@ -173,6 +230,9 @@ path is unchanged.
 7. Unsubscribe from TX and send `status`: serial still prints; nothing is queued.
 
 ## 8. Things found while reading, to fix in the same change
+
+All fixed in 2.0.0 (and `ledtail` now accepts 0..255, the range `dump` reports, instead of
+0..299 into a `uint8_t`; `decay`/`rainspeed` stay 1..40 and the AMOLED slider goes to 40).
 
 - `testmax` behaves like `testmin`: `bool wantMax = (line[4] == 'a');` checks index 4,
   which is `m` in both words (`src/main.cpp` ~1041).

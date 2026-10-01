@@ -61,6 +61,7 @@ DIP switch sets PCA9685 address bits A0–A2 (A3–A5 off). Boards are 0x40 (oct
 - **BLE MIDI peripheral** ("Steven Piano") — pair from inside any iOS MIDI app (Synthesia → Settings → Music Devices). Auto re-advertises on disconnect; the iPad reconnects by itself.
 - **Touch piano** on the AMOLED with swipe-glissando, live key highlighting, and a last-notes log.
 - **Web GUI** (`gui/piano-control.html`) over USB Web Serial — every tunable as a slider, a **MIDI-file player** (drop any `.mid`, e.g. AI-generated, and the piano plays it), a **strike tester** (sweep force × duration per key), and a big **EMERGENCY STOP**.
+- **Settings over Bluetooth** (firmware 2.0.0) — a Nordic UART console beside BLE-MIDI on the same connection lets the Steven Piano Android app read and change the lighting, feel and pedal settings (`dump` / `get` / `name value`). Default-deny allow-list: bench commands (`fire`, `sweep`, `reset`, per-key force, …) stay USB-only. See [`docs/BLE_SETTINGS.md`](docs/BLE_SETTINGS.md).
 - **MIDI panic support** — CC 120/121/123 (All Sound/Notes Off) release everything instantly.
 
 **Making solenoids musical**
@@ -99,9 +100,12 @@ pio device monitor      # serial console @115200 (type 'help')
 
 ## Serial console (or type into the web GUI)
 
+The same commands reach the piano over Bluetooth from the app, limited there to an allow-list ([`docs/BLE_SETTINGS.md`](docs/BLE_SETTINGS.md) §5).
+
 | Command | Purpose |
 |---|---|
-| `help` / `status` | Command list / full current state (boards, tunables, i2c fault count) |
+| `help` / `status` | Command list / full current state (firmware version, boards, tunables, i2c fault count) |
+| `dump` / `get <name>` | Every setting as `name=value` lines, then `end` / one of them (facts too: `get !fw`) |
 | `off` / `broadcast` / `panic` | Release everything (escalating levels; panic also forces Full-Power) |
 | `note <midi> <vel>` | Play through the full dispatch path (vel 0 = release) |
 | `rawnote <midi> <pwm>` | Strike-tester: raw force 0–4096, bypasses velocity mapping |
