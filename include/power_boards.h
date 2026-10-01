@@ -42,6 +42,31 @@ void testSweepAllBoards();                              // fire each ch once on 
 // energized behind a hung bus).
 bool broadcastAllOff();
 
+// ---- Firmware-update hooks (docs/BLE_OTA.md §7, docs/SAFETY.md rule 9) ----
+//
+// Energize inhibit. While set, the dispatch layer itself refuses EVERY
+// energize, at the places a coil is driven: the strike (NoteOn, deferred fire,
+// re-strike), the soft-release cushion (the release goes straight to the
+// verified OFF instead), manualFire/manualFireNote with pwm != 0, and the
+// sweep; dispatchNoteOn returns false before it touches any timer or the held
+// flag. Releases are NEVER inhibited: NoteOff, the s_needOff retry, the hold
+// watchdog, allKeysOff(), broadcastAllOff() and tickChipHealth() run as usual.
+// Setting it releases nothing by itself — the caller runs allKeysOff() next.
+void set_energize_inhibit(bool on);
+bool energize_inhibited();
+
+// True only when every coil is verified OFF and nothing is waiting to change
+// that: every board, ONLINE OR OFFLINE, has all 12 channels confirmed off
+// (no s_onAt, no s_needOff), and no key has a pending fire, pending release,
+// cushion, held note or queued repeat. Read-only — clears nothing (rule 1);
+// an offline board's believed-on coil keeps it false (rule 5).
+bool coilsVerifiedOff();
+
+// millis() of the most recent energize attempt — stamped on every call of
+// armOnAt(), whether or not the hold anchor moved. 0 = nothing energized since
+// boot. The update's quiet rule: no session within 500 ms of it.
+uint32_t lastEnergizeMs();
+
 // Tunable strike PWM values — defaults from config.h, can be changed at
 // runtime via the serial console commands ("pwm", "min", "max", "velmult").
 extern uint16_t g_sweepStrikePWM;
@@ -73,7 +98,7 @@ void setAllBoardsPWMFreq(uint16_t hz);
 
 // Per-key force multiplier — indexed by MIDI note (0..127). Applied to
 // the final PWM value after velocity mapping. Default 1.0 = no change.
-// Range 0.0..2.0. Used by the on-screen tuning page to compensate for
+// Range 0.0..4.0. Used by the on-screen tuning page to compensate for
 // solenoids that need more or less force than the global setting.
 // Stored in NVS as a 128-float blob.
 extern float g_keyForceMult[128];

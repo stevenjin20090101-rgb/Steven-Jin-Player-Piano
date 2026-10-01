@@ -86,10 +86,25 @@ const int kNumPowerBoards = sizeof(powerBoards) / sizeof(powerBoards[0]);
 // through armOnAt() — never assign s_onAt = now directly.
 static uint32_t s_onAt[8][12] = {{0}};   // [board_idx][semitone]
 
+// millis() of the most recent armOnAt() call — every energize attempt, whether
+// or not it moved the anchor. 0 = nothing energized since boot. Read through
+// lastEnergizeMs() by the firmware update's quiet rule (BLE_OTA.md §7).
+static uint32_t s_lastEnergizeMs = 0;
+
 static inline void armOnAt(int board_idx, uint8_t semitone, uint32_t now) {
+    uint32_t stamp = millis();
+    s_lastEnergizeMs = stamp ? stamp : 1;   // 0 means "never" — not a real energize
     if (now == 0) now = 1;   // 0 is the "believed OFF" sentinel — never store it for an ON
     if (s_onAt[board_idx][semitone] == 0) s_onAt[board_idx][semitone] = now;
 }
+
+// Energize inhibit (SAFETY.md rule 9), set for the whole life of a firmware
+// update session. While true, every place that drives a coil refuses: the
+// strike in fireNoteOnNow, the soft-release cushion in fireNoteOffNow (the
+// release goes straight to the verified OFF), manualFire/manualFireNote with
+// pwm != 0, and the sweep; dispatchNoteOn returns before it touches any timer.
+// Releases are never inhibited. Loop task only, like the rest of this state.
+static bool s_energizeInhibit = false;
 
 // Set when an OFF write for a channel FAILED. tickAutoRelease retries every
 // tick until it succeeds, independent of the g_maxHoldMs timeout — so a
@@ -225,6 +240,14 @@ static int boardForNote(uint8_t midi_note) {
 // Called both by the public dispatchNoteOn (immediate path) and the tick
 // function (when a deferred fire reaches its scheduled time).
 static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
+    // Firmware update in progress (rule 9): no strike — no write, no state
+    // change. Covers the immediate NoteOn, the deferred fire and the re-strike.
+    if (s_energizeInhibit) {
+#if DEBUG_DISPATCH
+        Serial.printf("[disp] note=%u REFUSED — energize inhibited\n", midi_note);
+#endif
+        return false;
+    }
     int idx = boardForNote(midi_note);
     if (idx < 0) {
 #if DEBUG_DISPATCH
@@ -433,7 +456,10 @@ static bool fireNoteOffNow(uint8_t midi_note) {
         return true;
     }
 
-    if (g_softRelease && g_releaseMs > 0 && g_releasePwm > 0 && midi_note < 128) {
+    // The cushion is current through the coil — an energize — so it is skipped
+    // while energize is inhibited (rule 9): straight to the verified OFF.
+    if (g_softRelease && g_releaseMs > 0 && g_releasePwm > 0 && midi_note < 128 &&
+        !s_energizeInhibit) {
         uint32_t now = millis();
         bool ok = b.chip.setPWM(channel, g_releasePwm);   // cushion current
         if (ok) {
@@ -476,6 +502,10 @@ static bool fireNoteOffNow(uint8_t midi_note) {
 // release after the deferred fire so the note has a minimum audible duration.
 
 bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
+    // Firmware update in progress (rule 9): refuse BEFORE touching any timer
+    // or the held flag, so nothing is queued to strike later either.
+    if (s_energizeInhibit) return false;
+
     // Mark the note held for auto re-strike (tremolo sustain). Applies to
     // both the immediate and deferred paths — the note is "held" the moment
     // the source presses it. heldSinceMs is the orphan-safety anchor and is
@@ -1008,6 +1038,36 @@ void allKeysOff() {
     }
 }
 
+// ---- Firmware-update hooks (docs/BLE_OTA.md §7, SAFETY.md rule 9) ---------
+// The update session sets the inhibit, runs allKeysOff(), then polls
+// coilsVerifiedOff() across loop passes while the normal safety ticks do the
+// releasing — these hooks add no release logic of their own.
+
+void set_energize_inhibit(bool on) { s_energizeInhibit = on; }
+bool energize_inhibited()          { return s_energizeInhibit; }
+
+// READ-ONLY: clears nothing (rule 1). Walks EVERY board, online or offline —
+// an offline board's believed-on coil keeps this false (rule 5) — then every
+// key's deferred state: a queued strike, release, cushion or held note means
+// the coil picture is about to change, so it is not "verified off" yet.
+bool coilsVerifiedOff() {
+    for (int i = 0; i < kNumPowerBoards; i++) {
+        for (uint8_t s = 0; s < 12; s++) {
+            if (s_onAt[i][s] != 0 || s_needOff[i][s]) return false;
+        }
+    }
+    for (int n = 0; n < 128; n++) {
+        const KeyTiming &kt = s_keyTiming[n];
+        if (kt.pendingFireMs != 0 || kt.pendingReleaseMs != 0 || kt.cushionOffMs != 0 ||
+            kt.held || kt.fireAfterRelease || kt.offAfterFire) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint32_t lastEnergizeMs() { return s_lastEnergizeMs; }
+
 // Force every PCA9685 channel on every chip to FULL_OFF in one I²C
 // transaction via the ALLCALL address. Works even if a chip's primary
 // address dipswitch is misset — every PCA9685 also listens to 0x70 by
@@ -1055,6 +1115,12 @@ bool broadcastAllOff() {
 // forever (fire hazard). So we REFUSE to energize any unmapped channel.
 // Turning a channel OFF (pwm==0) is always allowed.
 bool manualFire(uint8_t board_idx, uint8_t channel, uint16_t pwm) {
+    // Firmware update in progress (rule 9): refuse every energize. A release
+    // (pwm == 0) still goes through below.
+    if (pwm != 0 && s_energizeInhibit) {
+        Serial.println("[fire] REFUSED — energize inhibited (firmware update)");
+        return false;
+    }
     if (board_idx >= kNumPowerBoards) return false;
     auto& b = powerBoards[board_idx];
     if (!b.connected) return false;
@@ -1095,6 +1161,12 @@ bool manualFire(uint8_t board_idx, uint8_t channel, uint16_t pwm) {
 // Fire a MIDI note at a raw PWM, bypassing the whole velocity/soft-release
 // dispatch. Maps note → board + channel, then reuses manualFire's safe path.
 bool manualFireNote(uint8_t midi_note, uint16_t pwm) {
+    // Refuse an inhibited energize BEFORE the timer clear below: a refused
+    // test strike must not cancel this key's pending release or cushion.
+    if (pwm != 0 && s_energizeInhibit) {
+        Serial.println("[fire] REFUSED — energize inhibited (firmware update)");
+        return false;
+    }
     int idx = boardForNote(midi_note);
     if (idx < 0) return false;
     auto& b = powerBoards[idx];
@@ -1127,6 +1199,11 @@ void testSweepAllBoards() {
     static const char *kNoteNames[12] = {
         "C","C#","D","D#","E","F","F#","G","G#","A","A#","B"
     };
+    // Firmware update in progress (rule 9): the sweep is nothing but energizes.
+    if (s_energizeInhibit) {
+        Serial.println("[test] sweep REFUSED — energize inhibited (firmware update)");
+        return;
+    }
     Serial.println("[test] sweep start — ONE solenoid at a time (~0.5 A peak)");
 
     for (int i = 0; i < kNumPowerBoards; i++) {

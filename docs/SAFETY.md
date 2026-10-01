@@ -75,6 +75,21 @@ never ignore those return values.
    Striking over the energized coil would merge the two notes and, before
    this rule, silently dropped the release — a fast same-key pattern could
    then keep a coil energized indefinitely.
+9. **No energize during a firmware update.** While an update session is
+   active (`docs/BLE_OTA.md`: from an accepted BEGIN until the session ends
+   or the piano restarts) the dispatch layer itself refuses every energize:
+   `set_energize_inhibit(true)` is checked at each place a coil is driven —
+   the strike in `fireNoteOnNow()`, the soft-release cushion in
+   `fireNoteOffNow()` (the release goes straight to the verified OFF),
+   `manualFire()`/`manualFireNote()` with pwm ≠ 0, and the sweep — and
+   `dispatchNoteOn()` refuses before it queues anything.
+   Releases are never inhibited. The session stops the piano with
+   `allKeysOff()` and only goes on once `coilsVerifiedOff()` — every channel
+   on every board, online or offline, verified OFF, and no deferred strike,
+   release, cushion or held note — and at least 500 ms after the last
+   energize (`lastEnergizeMs()`). Dropping notes at the input and refusing
+   console commands are the polite layer; the inhibit is the guarantee, and
+   `tools/dispatch-sim` proves it.
 
 ## Why Full-Power mode is the installation default
 
@@ -96,7 +111,10 @@ Re-verify at minimum:
 - every new energize path stamps `s_onAt` through `armOnAt()` (or refuses,
   like unwired channels) — never assign it directly on a channel that may
   already be ON;
-- every new deferred/queued action is cleared in `allKeysOff()`;
+- every new energize path also refuses while energize is inhibited (rule 9):
+  check `s_energizeInhibit` before the write, and before touching any timer;
+- every new deferred/queued action is cleared in `allKeysOff()` and keeps
+  `coilsVerifiedOff()` false while it is pending;
 - nothing new can hold a coil past `g_maxHoldMs` from first energize;
 - then run a full `sweep` on hardware and confirm zero stuck keys, and watch
   `status` → `i2cFails` stays flat during a dense test song.
