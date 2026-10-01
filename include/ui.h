@@ -11,6 +11,11 @@
 
 void ui_init();
 void ui_refresh_status();
+// Puts `text` on the status line in colour 0xRRGGBB instead of the BLE state:
+// a firmware update in progress, or its outcome for a minute after
+// (docs/BLE_OTA.md sections 7 and 9). ui_refresh_status() puts the BLE state
+// back. Like every ui_* call: inside loop()'s ui_lock block only.
+void ui_set_status_text(const char *text, uint32_t rgb);
 void ui_refresh_note(uint8_t note, uint8_t velocity);
 void ui_set_key(uint8_t note, bool pressed);
 void ui_set_i2c_info(int count, const uint8_t *addrs);

@@ -971,6 +971,12 @@ void ui_refresh_status() {
     }
 }
 
+void ui_set_status_text(const char *text, uint32_t rgb) {
+    if (!lbl_status || !text) return;
+    lv_label_set_text(lbl_status, text);
+    lv_obj_set_style_text_color(lbl_status, lv_color_hex(rgb), LV_PART_MAIN);
+}
+
 void ui_refresh_note(uint8_t note, uint8_t velocity) {
     if (lbl_last_note) {
         lv_label_set_text_fmt(lbl_last_note, "Last: %s  vel=%u", noteName(note), velocity);

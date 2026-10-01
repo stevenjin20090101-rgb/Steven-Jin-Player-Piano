@@ -39,6 +39,7 @@
 #include "fw_info.h"
 #include "console_out.h"
 #include "ble_console.h"
+#include "ble_ota.h"
 
 // LVGL is not thread-safe. We render in a dedicated task on core 0 (away from
 // Arduino's loopTask on core 1) and protect every API call with this mutex.
@@ -112,6 +113,12 @@ AppState appState = {
     .inputMode = INPUT_MODE_BLE_ONLY,
     .touchVelocity = 100,
 };
+
+// Crash-loop safe mode is on for this boot: settings_boot_inc() counted 3 or
+// more crash resets in a row and forced Full Power. A firmware update is
+// refused for the whole boot (BEGIN gets ERR 10, docs/BLE_OTA.md section 7);
+// switching the piano off and on clears it.
+bool g_crashSafeMode = false;
 
 // Idle-dim seconds (0 = never dim). Persisted; tunable via "dimsecs".
 uint32_t g_idleDimSecs = DEFAULT_IDLE_DIM_SECS;
@@ -314,6 +321,11 @@ static void flushEventQueue() {
 // I²C dispatch path. Filters by appState.inputMode so the user's mode
 // dropdown actually gates which sources play.
 void note_input_enqueue(uint8_t on, uint8_t note, uint8_t velocity, bool from_ble) {
+    // A firmware update is running (docs/BLE_OTA.md §7): every note is dropped
+    // here, BLE-MIDI and touch keys alike. CC 120/121/123 still reach the
+    // all-off path, and the dispatch layer refuses any energize anyway
+    // (SAFETY.md rule 9); this keeps refused notes out of the queue.
+    if (ble_ota_session_active()) return;
     if (from_ble && appState.inputMode == INPUT_MODE_TOUCH_ONLY) return;
     if (!from_ble && appState.inputMode == INPUT_MODE_BLE_ONLY) return;
     enqueueEvent(on, note, velocity);
@@ -417,12 +429,28 @@ static void handleClock() {
 
 bool g_ledsEnabled = (DEFAULT_LEDS_ENABLED != 0);
 
+// Firmware update (docs/BLE_OTA.md §7): the strip is dark for the whole
+// session — one black frame, then nothing — and afterwards one full frame is
+// forced in the current mode, because STATIC only pushes when its colour or
+// brightness changes and would otherwise stay dark.
+static bool s_ledsDarkForUpdate = false;   // the black frame of this session is out
+static bool s_ledForceFrame     = false;   // next updateLeds(): push the current mode
+
 static void updateLeds() {
     // Master kill-switch: when off, do NO FastLED work at all. This removes
     // the ~9 ms/frame WS2812 output block that competes with note dispatch
     // and the BLE stack during dense passages — the top suspect for
     // "crashes on complex songs".
     if (!g_ledsEnabled) return;
+
+    if (ble_ota_session_active()) {
+        if (!s_ledsDarkForUpdate) {
+            s_ledsDarkForUpdate = true;
+            fill_solid(leds, LED_COUNT, CRGB::Black);
+            FastLED.show();
+        }
+        return;
+    }
 
     // Calibration override: while a 'ledtest' marker is active, show ONLY that
     // one LED bright white so you can line it up under the played key.
@@ -445,8 +473,10 @@ static void updateLeds() {
 
     // Mode switch: wipe the note-reactive decay buffer so ghosts of the old
     // mode's heat can't reappear when switching back into NOTE_REACTIVE.
+    // After a firmware update the current mode is pushed as if just chosen.
     static LedMode s_prevMode = LED_MODE_COUNT;
-    bool modeChanged = (appState.ledMode != s_prevMode);
+    bool modeChanged = (appState.ledMode != s_prevMode) || s_ledForceFrame;
+    s_ledForceFrame = false;
     if (modeChanged) {
         s_prevMode = appState.ledMode;
         clearLedReactive();                // wipe heat + held state
@@ -539,6 +569,29 @@ static volatile bool g_status_dirty = false;
 // console lines (GUI MIDI player streams `note` commands over serial — a
 // serial-driven song must keep the screen awake too).
 static uint32_t s_lastNoteActivityMs = 0;
+
+// ---- Firmware update: stop and resume (docs/BLE_OTA.md §7) -----------------
+// Called by the update session (ble_ota.cpp) on the loop task. On the way in
+// the energize inhibit is already set and the note funnel already drops notes;
+// the session then waits for coilsVerifiedOff() before it sends READY.
+void piano_stop_for_update() {
+    flushEventQueue();       // queued notes would only be refused now: drop them
+    allKeysOff();            // release every coil, wipe every deferred strike/release/cushion
+    clearLedReactive();      // no sustained LEDs
+    pedal_release();         // dampers down: the piano stops ringing
+    if (g_ledsEnabled) {     // the strip goes dark for the whole session
+        fill_solid(leds, LED_COUNT, CRGB::Black);
+        FastLED.show();
+        s_ledsDarkForUpdate = true;
+    }
+}
+
+// On the way out the inhibit is already cleared.
+void piano_resume_after_update() {
+    s_ledsDarkForUpdate = false;
+    s_ledForceFrame     = true;   // one full frame in the current mode (STATIC too)
+    g_status_dirty      = true;   // the status line back to the BLE state
+}
 
 // ---- Serial console -------------------------------------------------------
 //
@@ -850,6 +903,25 @@ static const SettingRow *findSettingRow(const char *name) {
     return nullptr;
 }
 
+// The console commands that drive a coil or the pedal servo directly, matched
+// exactly as their handlers below match them (so no spelling that a handler
+// would run slips past): refused while a firmware update runs. `note` only
+// with a velocity other than 0 — the handler plays any non-zero velocity.
+static bool energizesCoils(const char *line) {
+    if (!strcmp(line, "sweep"))                                        return true;
+    if (!strncmp(line, "pwm ", 4))                                     return true;   // sets + runs a sweep
+    if (!strncmp(line, "testmin", 7) || !strncmp(line, "testmax", 7))  return true;
+    if (!strncmp(line, "ramp ", 5))                                    return true;
+    if (!strncmp(line, "pedaltest ", 10))                              return true;
+    if (!strncmp(line, "fire ", 5))                                    return true;
+    if (!strncmp(line, "rawnote ", 8))                                 return true;
+    if (!strncmp(line, "note ", 5)) {
+        int n, v;
+        return sscanf(line + 5, "%d %d", &n, &v) == 2 && v != 0;
+    }
+    return false;
+}
+
 // Runs one console command. `line` is a NUL-terminated buffer the caller owns
 // (its trailing spaces are trimmed in place); `source` says where it came
 // from. Every reply goes through Console. For SRC_BLE the caller (the
@@ -870,6 +942,15 @@ static void handleLine(char *line, ConsoleSource source) {
     // no future caller can run a bench command from Bluetooth by mistake.
     if (source == SRC_BLE && !ble_console_allowed(line)) {
         Console.println(BLE_REFUSAL);
+        return;
+    }
+
+    // A firmware update is running (docs/BLE_OTA.md §7): nothing typed or sent,
+    // from any source, may drive a coil. The dispatch layer refuses anyway
+    // (SAFETY.md rule 9); this is the polite layer. off, broadcast, panic,
+    // status, dump, get, save and the settings keep working.
+    if (ble_ota_session_active() && energizesCoils(line)) {
+        Console.println("  refused — updating firmware");
         return;
     }
 
@@ -1505,8 +1586,9 @@ void setup() {
     // Crash-loop guard. If we got here 3+ times without a healthy uptime
     // in between, settings_boot_inc() forces Full Power on regardless of
     // saved settings. settings_boot_reset() in loop() clears the counter
-    // once we've been running stably for 30 s.
-    settings_boot_inc();
+    // once we've been running stably for 30 s. The count is kept for this
+    // boot: in safe mode a firmware update is refused (ERR 10).
+    g_crashSafeMode = (settings_boot_inc() >= 3);
 
     // *** EARLIEST fire-safety release ***
     // The PCA9685s hold their last PWM state across an ESP reset — a coil that
@@ -1609,9 +1691,7 @@ void setup() {
     NimBLEDevice::setMTU(255);
     NimBLEServer *srv = NimBLEDevice::createServer();
     ble_console_setup(srv);     // Nordic UART console (docs/BLE_SETTINGS.md)
-    // >>> 2.0.0 firmware update: ble_ota_setup(srv) goes HERE — Device
-    // >>> Information + Update services (docs/BLE_OTA.md section 3), likewise
-    // >>> before MIDI.begin().
+    ble_ota_setup(srv);         // Device Information + firmware update (docs/BLE_OTA.md §3)
 
     // Fast advertising for quick auto-reconnect. Intervals are in 0.625 ms
     // units, so 32..64 = 20..40 ms — the BLE "fast connect" window Apple
@@ -1666,9 +1746,11 @@ void setup() {
         if (adv) adv->start();
     }
 
-    // MIDI.begin() started the GATT server: the console's characteristics
-    // must now have real attribute handles. One [ble] line either way.
+    // MIDI.begin() started the GATT server: the console's and the update's
+    // characteristics must now have real attribute handles. One [ble] line
+    // each, either way.
     ble_console_check();
+    ble_ota_check();
 
     ui_init();
     ui_refresh_status();
@@ -1746,6 +1828,13 @@ void loop() {
         Serial.println("[midi] all-notes-off serviced");
     }
 
+    // Firmware update over Bluetooth (docs/BLE_OTA.md): the session's tick, at
+    // most one Control frame and 4,096 bytes of image a pass, the self-test that
+    // confirms a new image. After the safety ticks and the all-off services
+    // above, so they always come first; before MIDI.read(), which keeps running
+    // every pass during an update (notes are dropped at the funnel).
+    ble_ota_tick();
+
     MIDI.read();   // populates eventQ via our handleNoteOn/Off callbacks
 
     // Drain events for solenoid dispatch. CAP per iteration so a burst can't
@@ -1819,9 +1908,22 @@ void loop() {
             }
         }
 
-        if (g_status_dirty) {
-            g_status_dirty = false;
-            ui_refresh_status();
+        // The status line: the BLE state, or the firmware update's text while
+        // one runs and for a minute after one (docs/BLE_OTA.md §7, §9). Set
+        // only when it changes; the BLE line goes back when the text ends.
+        {
+            static char s_otaShown[48] = "";
+            char     ota[48];
+            uint32_t otaRgb = 0;
+            if (!ble_ota_status_text(ota, sizeof ota, &otaRgb)) ota[0] = '\0';
+            if (g_status_dirty || strcmp(ota, s_otaShown) != 0) {
+                g_status_dirty = false;
+                ui_refresh_status();                       // BLE state + peer line
+                if (ota[0]) ui_set_status_text(ota, otaRgb);
+                snprintf(s_otaShown, sizeof s_otaShown, "%s", ota);
+            }
+            // An update in progress, or its outcome on screen, keeps it awake.
+            if (ota[0]) s_lastNoteActivityMs = millis();
         }
 
         uint32_t now_locked = millis();
@@ -1894,8 +1996,9 @@ void loop() {
 
     // Sustain pedal: apply the latest CC64 here on the dispatch core (never
     // from the BLE callback). Change-gated + rate-limited inside, and a no-op
-    // when no pedal board is installed.
-    pedal_tick(g_sustainRaw);
+    // when no pedal board is installed. Held up (0 is UP in both pedal modes,
+    // and retries a failed lift) while a firmware update runs.
+    pedal_tick(ble_ota_session_active() ? 0 : g_sustainRaw);
     // (auto-release + pending-fire ticks now run at the TOP of loop() so a
     // note flood can never delay the safety net — see lastSafetyTick above.)
 
