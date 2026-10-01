@@ -114,6 +114,11 @@ AppState appState = {
     .touchVelocity = 100,
 };
 
+// Period of the safety ticks at the top of loop() — tickAutoRelease(),
+// tickPendingFires(), tickRestrike() — ~100 Hz. The !repeatms fact is derived
+// from it, so the two cannot drift apart.
+static const uint32_t kSafetyTickMs = 10;
+
 // Crash-loop safe mode is on for this boot: settings_boot_inc() counted 3 or
 // more crash resets in a row and forced Full Power. A firmware update is
 // refused for the whole boot (BEGIN gets ERR 10, docs/BLE_OTA.md section 7);
@@ -854,6 +859,10 @@ static const SettingRow kSettingRows[] = {
     FACT_ROW("pedalboard", "%s",  pedal_present() ? "online" : "absent"),
     // 64-bit µs clock: millis() would wrap after 49.7 days on the install.
     FACT_ROW("uptime",     "%lu", (unsigned long)(esp_timer_get_time() / 1000000LL)),
+    // The shortest steady same-key repeat the dispatch layer honours with the
+    // current settings: the minimum strike, the retrigger gap, and one safety
+    // tick of lateness each for the deferred release and the deferred strike.
+    FACT_ROW("repeatms",   "%lu", (unsigned long)(g_minStrikeMs + g_minRetriggerGapMs + 2 * kSafetyTickMs)),
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
@@ -1810,7 +1819,7 @@ void loop() {
     // These are cheap (a few hundred cmp ops) and touch only the PCA bus.
     static uint32_t lastSafetyTick = 0;
     uint32_t nowTop = millis();
-    if (nowTop - lastSafetyTick >= 10) {   // ~100 Hz
+    if (nowTop - lastSafetyTick >= kSafetyTickMs) {   // ~100 Hz
         lastSafetyTick = nowTop;
         tickAutoRelease();
         tickPendingFires();

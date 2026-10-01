@@ -113,6 +113,7 @@ Read-only facts are prefixed `!`. Exact list and order:
 !i2cfails=<n>
 !pedalboard=absent|online
 !uptime=<seconds>
+!repeatms=<ms>                     (the shortest steady same-key repeat period the piano honours now, see below)
 leds=0|1
 ledmode=0..3
 ledbright=0..255
@@ -160,6 +161,12 @@ end
 ```
 
 `minwhite` is the same variable as `min`; dump reports it once, as `min`.
+
+`!repeatms` (added 2026-10-01, a compatible addition: the app keeps facts it does not know
+and ignores them) is the shortest steady same-key repeat period the dispatch layer honours
+with the current settings, `minstrike + gap + 2 × 10 ms` (each deferred release and deferred
+strike runs on the 10 ms safety tick); it changes when `minstrike` or `gap` does. The first
+repeat after a lone note can additionally wait up to `isostrike − minstrike`.
 
 **`get <name>`** prints the single `name=value` line for any name in the list above
 (including the `!` facts), or `  unknown setting` for anything else. The name may be given
