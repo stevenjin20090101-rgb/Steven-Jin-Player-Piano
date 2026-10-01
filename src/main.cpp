@@ -29,6 +29,7 @@
 #include <freertos/semphr.h>
 #include <esp_task_wdt.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 
 #include "config.h"
 #include "ui.h"
@@ -782,7 +783,8 @@ static const SettingRow kSettingRows[] = {
     { "boards", true, boardsValue },
     FACT_ROW("i2cfails",   "%lu", (unsigned long)g_i2cFailCount),
     FACT_ROW("pedalboard", "%s",  pedal_present() ? "online" : "absent"),
-    FACT_ROW("uptime",     "%lu", (unsigned long)(millis() / 1000)),
+    // 64-bit µs clock: millis() would wrap after 49.7 days on the install.
+    FACT_ROW("uptime",     "%lu", (unsigned long)(esp_timer_get_time() / 1000000LL)),
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
