@@ -615,7 +615,7 @@ static void printHelp() {
         "    ledbright <0..255>       LED strip brightness\n"
         "    ledcount <1..300>        physical LEDs on the strip (sets note→LED scale)\n"
         "    ledoffset <n>            fine shift the lit LED under the played key (+/-)\n"
-        "    ledscale <10..400>       %% gain on note→LED spread (fix drift, fewer LEDs than keys)\n"
+        "    ledscale <10..400>       % gain on note→LED spread (fix drift, fewer LEDs than keys)\n"
         "    ledtail <0..255>         keep the last N LEDs dark (past keys with no solenoid)\n"
         "    ledtest <midi>           light that key's LED white for 4s (alignment calibration)\n"
         "    ledreverse 0|1           flip strip direction (high→low notes)\n"
@@ -627,7 +627,7 @@ static void printHelp() {
         "    volume <0..100>          MASTER VOLUME - lower = softer whole piano\n"
         "    soft                     one-tap quiet preset (fullpower off + volume) + save\n"
         "    blereset                 clear stored BLE bonds (fixes \"must forget device\")\n"
-        "    burstboost <0..100>      %% toward max force for fast notes (short-note physics)\n"
+        "    burstboost <0..100>      % toward max force for fast notes (short-note physics)\n"
         "    burstgap <0..600>        gap under which notes count as a burst\n"
         "    testmin [midi]           play that key at its group FLOOR (default C4)\n"
         "    testmax [midi]           play that key at MAX force\n"
@@ -1613,6 +1613,22 @@ void setup() {
     // >>> Information + Update services (docs/BLE_OTA.md section 3), likewise
     // >>> before MIDI.begin().
 
+    // Fast advertising for quick auto-reconnect. Intervals are in 0.625 ms
+    // units, so 32..64 = 20..40 ms — the BLE "fast connect" window Apple
+    // devices scan for. The default is several times slower, which is what
+    // makes a re-pair feel like it hangs. Cheap: we only advertise while
+    // disconnected, so there's no ongoing cost once the iPad is on. Set
+    // BEFORE MIDI.begin(): its advertising start is the one that runs, and
+    // start() on an advertiser already running returns at once — set after
+    // it, the fast intervals only took effect after the first disconnect.
+    {
+        NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+        if (adv) {
+            adv->setMinInterval(32);   // 20 ms
+            adv->setMaxInterval(64);   // 40 ms
+        }
+    }
+
     MIDI.begin(MIDI_CHANNEL_OMNI);
     MIDI.setHandleNoteOn(handleNoteOn);
     MIDI.setHandleNoteOff(handleNoteOff);
@@ -1644,18 +1660,10 @@ void setup() {
         }
     }
 
-    // Fast advertising for quick auto-reconnect. Intervals are in 0.625 ms
-    // units, so 32..64 = 20..40 ms — the BLE "fast connect" window Apple
-    // devices scan for. The default is several times slower, which is what
-    // makes a re-pair feel like it hangs. Cheap: we only advertise while
-    // disconnected, so there's no ongoing cost once the iPad is on.
+    // Advertising runs from MIDI.begin(); a no-op then, kept so it is certain.
     {
         NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
-        if (adv) {
-            adv->setMinInterval(32);   // 20 ms
-            adv->setMaxInterval(64);   // 40 ms
-            adv->start();
-        }
+        if (adv) adv->start();
     }
 
     // MIDI.begin() started the GATT server: the console's characteristics
