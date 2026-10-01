@@ -576,7 +576,7 @@ static void printHelp() {
         "    pwm <0..4095>            set sweep PWM + run a sweep\n"
         "    min <0..4095>            set velocity=1 PWM floor\n"
         "    max <0..4095>            set velocity=127 PWM ceiling\n"
-        "    hold <ms>                safety auto-release timeout (default 5000)\n"
+        "    hold <ms>                safety auto-release timeout (default 2000, hard max 4000)\n"
         "    gap <0..300>             min ms between same-key NoteOff and next NoteOn (default 30)\n"
         "    minstrike <0..500>       min ms a solenoid stays energized — fixes \"short notes forgotten\"\n"
         "    isostrike <0..500>       longer min-strike for a LONE short note (after silence) so it sounds\n"

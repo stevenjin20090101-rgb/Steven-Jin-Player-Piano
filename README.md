@@ -128,6 +128,7 @@ pio device monitor      # serial console @115200 (type 'help')
 
 - [`tools/i2c-scanner`](tools/i2c-scanner) — standalone bus scanner; use when setting DIP addresses or debugging the trunk. Also broadcasts all-off at boot (frees any solenoid stuck by a previous crash).
 - [`tools/led-test`](tools/led-test) — minimal WS2812B color-cycle on GPIO 18+41 simultaneously to validate strip wiring independent of everything else.
+- [`tools/dispatch-sim`](tools/dispatch-sim) — host-side simulator for the solenoid dispatch state machine (`make check`); proves the hold ceiling holds under rapid same-key repeats without touching hardware.
 
 ## Troubleshooting
 

@@ -47,7 +47,13 @@ never ignore those return values.
    otherwise a queued strike could re-energize a coil *after* an emergency stop.
 3. **Every energize arms the watchdog** (`s_onAt` timestamped) — including
    manual/test paths (`fire`, `rawnote`). Channels with no watchdog slot
-   (unwired PCA outputs 7–10) **refuse to energize at all**.
+   (unwired PCA outputs 7–10) **refuse to energize at all**. The stamp is
+   anchored to the *first* energize after the last **verified** OFF and is
+   never refreshed while the channel is still believed ON (`armOnAt()`), so
+   re-writing an energized coil — a repeated NoteOn, a cushion write, a strike
+   landing on a failed-OFF retry — cannot push the hold deadline out. The
+   ceiling is a property of the coil's verified-OFF history, not of the MIDI
+   held/released bookkeeping.
 4. **Feature timers may not extend the thermal budget.** Example: auto
    re-strike re-arms `s_onAt` on every hit, which would blind layer 3 — so it
    enforces the same `g_maxHoldMs` bound itself from the *first* press
@@ -62,6 +68,13 @@ never ignore those return values.
    never starve the release watchdog.
 7. **Cushion current counts as ON.** Soft-release's holding current is
    watchdog-covered like a full strike.
+8. **A NoteOn never cancels a pending release.** A repeat of a key whose
+   previous note is still energized (its NoteOff was deferred by the
+   min-strike rule) is queued *behind* that release and fires one retrigger
+   gap after the verified lift (`fireAfterRelease` in `tickPendingFires`).
+   Striking over the energized coil would merge the two notes and, before
+   this rule, silently dropped the release — a fast same-key pattern could
+   then keep a coil energized indefinitely.
 
 ## Why Full-Power mode is the installation default
 
@@ -80,7 +93,9 @@ isolation) before trusting PWM again.
 Re-verify at minimum:
 - every new `setPWM(..., 0)` call site checks the return or routes through
   `tryChannelOff`;
-- every new energize path stamps `s_onAt` (or refuses, like unwired channels);
+- every new energize path stamps `s_onAt` through `armOnAt()` (or refuses,
+  like unwired channels) — never assign it directly on a channel that may
+  already be ON;
 - every new deferred/queued action is cleared in `allKeysOff()`;
 - nothing new can hold a coil past `g_maxHoldMs` from first energize;
 - then run a full `sweep` on hardware and confirm zero stuck keys, and watch

@@ -282,8 +282,8 @@
     </label>
     <label class="full">
       <div class="label-line"><span class="name">Hold timeout <small>(auto-release safety)</small></span>
-        <span class="value" id="hold-val">5000 ms</span></div>
-      <input type="range" id="hold" min="50" max="10000" value="5000">
+        <span class="value" id="hold-val">2000 ms</span></div>
+      <input type="range" id="hold" min="50" max="4000" value="2000">
     </label>
     <label class="full">
       <div class="label-line"><span class="name">PWM carrier frequency</span>
@@ -599,7 +599,7 @@ async function sendCmd(cmd) {
 
 // Parse boot-time status output to sync sliders to firmware values.
 // Looks for:
-//   "PWM settings: sweep=2500  min=1500  max=4095  hold=5000 ms  velmult=1.00"
+//   "PWM settings: sweep=2500  min=1500  max=4095  hold=2000 ms  velmult=1.00"
 //   "freq=1500 Hz   fullpower=OFF   gap=30 ms"
 function parseStatus(line) {
   const m1 = line.match(/sweep=(\d+)\s+min=(\d+)\s+max=(\d+)\s+hold=(\d+)\s*ms\s+velmult=([\d.]+)/);

@@ -76,7 +76,20 @@ const int kNumPowerBoards = sizeof(powerBoards) / sizeof(powerBoards[0]);
 // after a CONFIRMED-SUCCESSFUL I²C OFF write — never on a write we didn't
 // verify landed. Otherwise a failed OFF (bus glitch from solenoid EMI) would
 // leave the coil energized while the watchdog thinks it's off → stuck-on fire.
+//
+// ANCHORING RULE: the stamp is taken when a channel goes from believed-OFF to
+// ON and is NOT refreshed while the channel is still believed ON. Re-writing
+// an energized coil (repeated NoteOn, cushion write, a strike landing on a
+// failed-OFF retry) therefore never slides the thermal deadline: the hold
+// ceiling is always measured from the first energize after the last VERIFIED
+// OFF, whatever the MIDI held/released bookkeeping says. Energize paths go
+// through armOnAt() — never assign s_onAt = now directly.
 static uint32_t s_onAt[8][12] = {{0}};   // [board_idx][semitone]
+
+static inline void armOnAt(int board_idx, uint8_t semitone, uint32_t now) {
+    if (now == 0) now = 1;   // 0 is the "believed OFF" sentinel — never store it for an ON
+    if (s_onAt[board_idx][semitone] == 0) s_onAt[board_idx][semitone] = now;
+}
 
 // Set when an OFF write for a channel FAILED. tickAutoRelease retries every
 // tick until it succeeds, independent of the g_maxHoldMs timeout — so a
@@ -93,8 +106,14 @@ static uint8_t s_offFailStreak = 0;
 //   pendingFireMs    if non-zero, fire the NoteOn at this millis() target
 //   pendingReleaseMs if non-zero, fire the NoteOff at this millis() target
 //                    (set when the source's NoteOff arrived BEFORE the
-//                    deferred fire executed)
+//                    deferred fire executed, or before the note's minimum
+//                    strike window elapsed)
 //   pendingVelocity  velocity to use when the deferred fire runs
+//   fireAfterRelease the queued fire must wait until pendingReleaseMs has
+//                    EXECUTED — the previous note on this key is still
+//                    energized inside its min-strike window (rapid repeat)
+//   offAfterFire     the source already released that queued note: schedule
+//                    its release DEFERRED_STRIKE_MIN_MS after it really fires
 struct KeyTiming {
     uint32_t lastOffMs;
     uint32_t onAtMs;          // millis() when this note's last NoteOn fired
@@ -103,6 +122,8 @@ struct KeyTiming {
     uint32_t pendingReleaseMs;
     uint32_t cushionOffMs;    // if non-zero: soft-release cushion active, cut to 0 at this time
     uint8_t  pendingVelocity;
+    bool     fireAfterRelease; // see above: strike queued BEHIND a pending release
+    bool     offAfterFire;     // see above: auto-release that queued strike
     // --- auto re-strike (tremolo sustain) ---
     bool     held;            // source has this note pressed (NoteOn, no NoteOff yet)
     uint8_t  heldVel;         // velocity to re-strike with
@@ -320,11 +341,19 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
     }
 
     uint32_t now = millis();
-    b.chip.setPWM(channel, (uint16_t)pwm);
-    s_onAt[idx][semitone]   = now;      // arm auto-release watchdog
-    s_needOff[idx][semitone] = false;   // fresh strike supersedes a prior failed-OFF
-                                        // retry — otherwise the watchdog would
-                                        // cut this note ~10 ms after attack
+    bool wrote = b.chip.setPWM(channel, (uint16_t)pwm);
+    armOnAt(idx, semitone, now);        // arm auto-release watchdog — keeps the
+                                        // older anchor if the coil is already ON
+                                        // (see the s_onAt anchoring rule)
+    if (wrote) {
+        s_needOff[idx][semitone] = false;   // fresh strike supersedes a prior failed-OFF
+                                            // retry — otherwise the watchdog would
+                                            // cut this note ~10 ms after attack.
+                                            // Only a strike that actually LANDED may
+                                            // do this: if the write failed, the coil
+                                            // is still whatever it was, so keep the
+                                            // outstanding OFF retrying.
+    }
     if (midi_note < 128) {
         s_keyTiming[midi_note].onAtMs = now;       // for minStrike
         s_keyTiming[midi_note].cushionOffMs = 0;   // supersede any in-flight cushion
@@ -410,8 +439,10 @@ static bool fireNoteOffNow(uint8_t midi_note) {
         if (ok) {
             // Watchdog stays armed during the cushion (s_onAt), so even if the
             // cushion-completion OFF later fails, the g_maxHoldMs timeout still
-            // force-releases this channel — the cushion is fully covered.
-            s_onAt[idx][semitone] = now;
+            // force-releases this channel — the cushion is fully covered. The
+            // anchor is NOT refreshed: cushion current counts as ON, continuous
+            // with the strike it follows.
+            armOnAt(idx, semitone, now);
             s_keyTiming[midi_note].cushionOffMs = now + g_releaseMs;
         } else {
             // Cushion write didn't land — don't depend on a cushion that
@@ -455,12 +486,43 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
         // Anchor the thermal/orphan timer to the FIRST press only. A stream
         // of NoteOns for an already-held key (sustain re-articulation, buggy
         // source) must NOT slide the safety cutoff forward — otherwise the
-        // coil could be driven indefinitely.
+        // coil could be driven indefinitely. (The continuous-energize bound
+        // does not depend on this flag at all: s_onAt is anchored to the last
+        // VERIFIED OFF — see armOnAt — so a NoteOff that never lifted the coil
+        // cannot restart the hold ceiling by clearing `held`.)
         if (!kt.held) kt.heldSinceMs = now;
         kt.held            = true;
         kt.heldVel         = velocity;
         kt.reStrikeAtMs    = now + g_restrikeMs;   // first re-strike after one interval
         kt.reStrikeLifting = false;
+    }
+
+    // Repeat of a key whose previous note is STILL ENERGIZED with its release
+    // pending: the NoteOff arrived inside the min-strike window, so the OFF
+    // was deferred to onAtMs + effMinStrikeMs and has not executed yet.
+    // Striking now would only re-write an already-on coil — no lift, the two
+    // notes merge — and (before this guard) it also cancelled the pending
+    // release, so a fast same-key pattern could keep the coil energized
+    // indefinitely. NEVER cancel a pending release. Queue this strike BEHIND
+    // it instead: the release executes on schedule through the verified-OFF
+    // path, then the strike fires one retrigger gap after the REAL lift
+    // (tickPendingFires re-times it from the actual release). A further
+    // NoteOn while still waiting just refreshes the queued velocity. This
+    // does not depend on g_minRetriggerGapMs: with gap 0 the strike lands on
+    // the tick after the lift.
+    if (midi_note < 128) {
+        KeyTiming &rt = s_keyTiming[midi_note];
+        if (rt.pendingReleaseMs != 0 && (rt.pendingFireMs == 0 || rt.fireAfterRelease)) {
+            rt.fireAfterRelease = true;
+            rt.offAfterFire     = false;   // the source is pressing it again
+            rt.pendingFireMs    = rt.pendingReleaseMs + g_minRetriggerGapMs;
+            rt.pendingVelocity  = velocity;
+#if DEBUG_DISPATCH
+            Serial.printf("[disp] note=%u repeat while release pending → queued behind release (+%lu ms gap)\n",
+                          midi_note, (unsigned long)g_minRetriggerGapMs);
+#endif
+            return true;
+        }
     }
     if (g_minRetriggerGapMs > 0 && midi_note < 128) {
         uint32_t now = millis();
@@ -480,6 +542,8 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
             rt.pendingFireMs    = now + g_minRetriggerGapMs;
             rt.pendingVelocity  = velocity;
             rt.pendingReleaseMs = 0;
+            rt.fireAfterRelease = false;
+            rt.offAfterFire     = false;
 #if DEBUG_DISPATCH
             Serial.printf("[disp] note=%u retrigger during cushion → cut + defer %lu ms\n",
                           midi_note, (unsigned long)g_minRetriggerGapMs);
@@ -495,7 +559,11 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
             if (elapsed < g_minRetriggerGapMs) {
                 rt.pendingFireMs    = lastOff + g_minRetriggerGapMs;
                 rt.pendingVelocity  = velocity;
-                rt.pendingReleaseMs = 0;  // unscheduled until NoteOff
+                rt.pendingReleaseMs = 0;  // unscheduled until NoteOff (only a
+                                          // not-yet-fired note's own release can
+                                          // be here — an energized note's pending
+                                          // release was handled above)
+                rt.offAfterFire     = false;
 #if DEBUG_DISPATCH
                 Serial.printf("[disp] note=%u deferred by %lu ms (gap=%lu)\n",
                               midi_note,
@@ -518,6 +586,8 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
             s_keyTiming[midi_note].pendingFireMs    = millis() + jitter;
             s_keyTiming[midi_note].pendingVelocity  = velocity;
             s_keyTiming[midi_note].pendingReleaseMs = 0;
+            s_keyTiming[midi_note].fireAfterRelease = false;
+            s_keyTiming[midi_note].offAfterFire     = false;
             return true;
         }
     }
@@ -526,10 +596,15 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
     // for this note — clear the queued fire AND any scheduled release, or a
     // stale pendingReleaseMs from a prior deferred-off would later cut this
     // freshly-struck note short (dropped held note). cushionOffMs is cleared
-    // inside fireNoteOnNow.
+    // inside fireNoteOnNow. The only pendingReleaseMs that can still be set
+    // here belongs to a NOT-YET-FIRED queued note (nothing is energized); a
+    // pending release for an energized note never reaches this point — it is
+    // queued behind, above.
     if (midi_note < 128) {
         s_keyTiming[midi_note].pendingFireMs    = 0;
         s_keyTiming[midi_note].pendingReleaseMs = 0;
+        s_keyTiming[midi_note].fireAfterRelease = false;
+        s_keyTiming[midi_note].offAfterFire     = false;
     }
     return fireNoteOnNow(midi_note, velocity);
 }
@@ -547,6 +622,16 @@ bool dispatchNoteOff(uint8_t midi_note) {
         // wants the note off — schedule a brief audible release after
         // the deferred fire so the note actually plays for ~50 ms.
         if (s_keyTiming[midi_note].pendingFireMs != 0) {
+            if (s_keyTiming[midi_note].fireAfterRelease &&
+                s_keyTiming[midi_note].pendingReleaseMs != 0) {
+                // The queued fire is waiting BEHIND the previous note's pending
+                // release, which owns pendingReleaseMs. That release is what
+                // lifts the energized coil and must run exactly when scheduled,
+                // so leave it alone: flag the queued note to auto-release
+                // DEFERRED_STRIKE_MIN_MS after it actually fires.
+                s_keyTiming[midi_note].offAfterFire = true;
+                return true;
+            }
             s_keyTiming[midi_note].lastOffMs = now;
             s_keyTiming[midi_note].pendingReleaseMs =
                 s_keyTiming[midi_note].pendingFireMs + DEFERRED_STRIKE_MIN_MS;
@@ -670,29 +755,59 @@ void tickChipHealth() {
 void tickPendingFires() {
     uint32_t now = millis();
     for (int n = 0; n < 128; n++) {
-        if (s_keyTiming[n].pendingFireMs != 0 && now >= s_keyTiming[n].pendingFireMs) {
-            fireNoteOnNow((uint8_t)n, s_keyTiming[n].pendingVelocity);
-            s_keyTiming[n].pendingFireMs = 0;
-            // If the source's NoteOff already scheduled a release that is due
-            // this same tick (tick ran late, or DEFERRED_STRIKE_MIN_MS < tick
-            // period), push it out so the just-struck note gets its minimum
-            // audible time instead of firing and instantly releasing.
-            if (s_keyTiming[n].pendingReleaseMs != 0 &&
-                s_keyTiming[n].pendingReleaseMs <= now) {
-                s_keyTiming[n].pendingReleaseMs = now + DEFERRED_STRIKE_MIN_MS;
+        KeyTiming &kt = s_keyTiming[n];
+        // A strike queued BEHIND a still-pending release (rapid same-key
+        // repeat — see dispatchNoteOn) must not run until that release has
+        // actually executed: never strike over a coil we haven't lifted. The
+        // release is handled below in this same pass; the strike then lands
+        // on a later tick, re-timed from the real lift.
+        bool waitingForRelease = kt.fireAfterRelease && kt.pendingReleaseMs != 0;
+        if (kt.pendingFireMs != 0 && now >= kt.pendingFireMs && !waitingForRelease) {
+            fireNoteOnNow((uint8_t)n, kt.pendingVelocity);
+            kt.pendingFireMs    = 0;
+            kt.fireAfterRelease = false;
+            if (kt.offAfterFire) {
+                // The source released this note while it was still queued
+                // behind the previous release: give it its minimum audible
+                // time from the moment it ACTUALLY struck, then let it go.
+                kt.offAfterFire     = false;
+                kt.pendingReleaseMs = now + DEFERRED_STRIKE_MIN_MS;
+            } else if (kt.pendingReleaseMs != 0 && kt.pendingReleaseMs <= now) {
+                // If the source's NoteOff already scheduled a release that is
+                // due this same tick (tick ran late, or DEFERRED_STRIKE_MIN_MS
+                // < tick period), push it out so the just-struck note gets its
+                // minimum audible time instead of firing and instantly
+                // releasing.
+                kt.pendingReleaseMs = now + DEFERRED_STRIKE_MIN_MS;
             }
         }
-        if (s_keyTiming[n].pendingReleaseMs != 0 && now >= s_keyTiming[n].pendingReleaseMs) {
-            fireNoteOffNow((uint8_t)n);   // may START a soft-release cushion
-            s_keyTiming[n].lastOffMs = now;
-            s_keyTiming[n].pendingReleaseMs = 0;
+        if (kt.pendingReleaseMs != 0 && now >= kt.pendingReleaseMs) {
+            if (kt.fireAfterRelease) {
+                // A repeat of this key is queued right behind this release.
+                // Skip the anti-clank cushion (it would hold the plunger
+                // partway down under the re-strike) and cut straight to 0
+                // through the verified-OFF path, then space the queued strike
+                // a full retrigger gap from this REAL lift, not the scheduled
+                // one (the tick may have run late).
+                hardOffNow((uint8_t)n);        // verified OFF or s_needOff retry
+                kt.fireAfterRelease = false;
+                if (kt.pendingFireMs != 0) kt.pendingFireMs = now + g_minRetriggerGapMs;
+#if DEBUG_DISPATCH
+                Serial.printf("[disp] note=%u pending release executed, queued repeat fires in %lu ms\n",
+                              (unsigned)n, (unsigned long)g_minRetriggerGapMs);
+#endif
+            } else {
+                fireNoteOffNow((uint8_t)n);   // may START a soft-release cushion
+            }
+            kt.lastOffMs = now;
+            kt.pendingReleaseMs = 0;
         }
         // Soft-release cushion completion: after the cushion window, cut the
         // channel fully to 0. This is the true release when soft-release is on.
         // Do NOT touch lastOffMs here — it was already set at the real release
         // moment (dispatchNoteOff or the pendingRelease branch above); the
         // retrigger gap should measure from THAT, not the cushion-end time.
-        if (s_keyTiming[n].cushionOffMs != 0 && now >= s_keyTiming[n].cushionOffMs) {
+        if (kt.cushionOffMs != 0 && now >= kt.cushionOffMs) {
             hardOffNow((uint8_t)n);       // clears cushionOffMs + s_onAt
         }
     }
@@ -704,9 +819,10 @@ void tickPendingFires() {
 // by a fresh strike. Bypasses gap/minstrike (direct fire/off) so it can't
 // fight those.
 //
-// THERMAL SAFETY: each re-strike's fireNoteOnNow resets s_onAt, so the
-// tickAutoRelease g_maxHoldMs watchdog would NEVER trip for a tremoloing
-// note. So tickRestrike enforces the SAME thermal budget itself, measured
+// THERMAL SAFETY: each re-strike lifts the key through a VERIFIED OFF (which
+// clears s_onAt) and then re-arms it, so the per-energize tickAutoRelease
+// g_maxHoldMs watchdog restarts on every hit and would NEVER trip for a
+// tremoloing note. So tickRestrike enforces the SAME thermal budget itself, measured
 // from heldSinceMs (the first press, never reset by re-strikes) and capped
 // at the runtime-clamped g_maxHoldMs. A held/orphaned note therefore can
 // never drive its coil longer than g_maxHoldMs total — identical to a
@@ -770,8 +886,12 @@ void tickRestrike() {
 // Auto-release watchdog. Walk every armed channel; if any has been held
 // longer than g_maxHoldMs, force-release it. SAFETY NET ONLY — primary
 // release path is NoteOff, this only catches orphans (dropped BLE packets,
-// firmware bugs). With g_maxHoldMs = 5 s default, legitimate sustained
-// notes are never cut short.
+// firmware bugs). With g_maxHoldMs = 2 s default (hard ceiling 4 s, see
+// MAX_HOLD_CEILING_MS), ordinary playing is never cut short — a piano hammer
+// strikes and rebounds rather than holding — while a stuck coil is released
+// long before it can get hot. The age is measured from the first energize
+// after the last VERIFIED OFF (see armOnAt), so nothing that re-writes an
+// already-energized channel can push the deadline out.
 void tickAutoRelease() {
     uint32_t now = millis();
     bool anyPending = false;
@@ -873,6 +993,8 @@ void allKeysOff() {
         s_keyTiming[n].cushionOffMs     = 0;
         s_keyTiming[n].held             = false;   // stop any auto re-strike
         s_keyTiming[n].reStrikeLifting  = false;
+        s_keyTiming[n].fireAfterRelease = false;
+        s_keyTiming[n].offAfterFire     = false;
     }
     s_offFailStreak = 0;
     // Final belt-and-suspenders sweep. Verified success → whole model clear.
@@ -963,9 +1085,10 @@ bool manualFire(uint8_t board_idx, uint8_t channel, uint16_t pwm) {
         tryChannelOff(board_idx, semitone);
         return true;
     }
-    b.chip.setPWM(channel, pwm);
-    s_onAt[board_idx][semitone]   = millis();   // arm watchdog
-    s_needOff[board_idx][semitone] = false;     // fresh energize supersedes any pending-off
+    bool wrote = b.chip.setPWM(channel, pwm);
+    armOnAt(board_idx, (uint8_t)semitone, millis());   // arm watchdog (anchor kept if already ON)
+    if (wrote) s_needOff[board_idx][semitone] = false; // a LANDED energize supersedes any
+                                                       // pending-off; a failed one must not
     return true;
 }
 
@@ -983,6 +1106,8 @@ bool manualFireNote(uint8_t midi_note, uint16_t pwm) {
         s_keyTiming[midi_note].pendingFireMs    = 0;
         s_keyTiming[midi_note].pendingReleaseMs = 0;
         s_keyTiming[midi_note].cushionOffMs     = 0;
+        s_keyTiming[midi_note].fireAfterRelease = false;
+        s_keyTiming[midi_note].offAfterFire     = false;
     }
     return manualFire((uint8_t)idx, kKeyToChannel[semitone], pwm);
 }
