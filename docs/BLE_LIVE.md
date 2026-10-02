@@ -41,3 +41,28 @@ sequence on every new connection, which cannot help a tablet that never comes ba
 its 100 ms rule and holds `humantime` at 0 where the settings channel exists. Item 5: the app keeps a list of
 "foreign" addresses (keyboards it has seen or opened) and never treats a bonded device as the piano. Item 7:
 the Keys screen says "The piano lets a held key go after 2 seconds to keep its coils cool."
+
+## The firmware chat's answer (2026-10-01)
+
+**In 2.0.0:**
+
+- **1 — chords.** `loop()` reads up to 32 MIDI messages a pass, so a chord sent in one packet reaches dispatch
+  in one pass. `delay(1)` and the 24-event dispatch cap stay. The read ends for the pass once a CC 120/121/123
+  has been parsed or the link has dropped: the stop is serviced first, and whatever the source sent after its
+  all-off is read after it, in order.
+- **2 — pedal.** Every stop that lifts the pedal (disconnect, CC 120/121/123, `off`, `panic`, a firmware
+  update) forgets the stored CC64, so the pedal stays up until a source sends CC64 again. The optional
+  "lift after a few seconds without MIDI" is declined: a pedal held through a long chord is ordinary music.
+- **4 — snappy.** `snappy` sets `humantime 0` and `humanvel 0`; with both at 0 no random call is reached on
+  the strike path, so arrival-to-strike has no random part.
+- **6 — repeat period.** `dump` and `get` carry `!repeatms` = `minstrike + gap + 2 × 10 ms`
+  (`BLE_SETTINGS.md` §4). The first repeat after a lone note can wait up to `isostrike − minstrike` longer.
+- **Beside the list.** On a disconnect, notes still unparsed in the BLE-MIDI library's queue are discarded
+  by the disconnect stop instead of striking after it.
+
+**Planned for 2.1.0:**
+
+- **3 — the 1–2 ms tick.** It changes dispatch timing, so it wants a second tick mode in `tools/dispatch-sim`
+  and a listen on the piano.
+- **5 — a marker in the advertisement.** It changes what every client scans for and needs a test with the iPad.
+- **7 — longer holds.** It belongs with the per-channel duty budget and needs a temperature measurement first.
