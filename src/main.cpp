@@ -321,6 +321,11 @@ static void flushEventQueue() {
     portEXIT_CRITICAL(&s_qMux);
 }
 
+// True only while loop() empties the BLE-MIDI library's byte queue as part of
+// the disconnect stop: the notes parsed then were sent before the link dropped
+// and must not sound after it. Loop task only (MIDI.read() runs the handlers).
+static bool s_discardBleNotes = false;
+
 // Public entry point — both BLE callbacks (NimBLE task) and on-screen
 // piano key taps (LVGL task) funnel through here so there's exactly one
 // I²C dispatch path. Filters by appState.inputMode so the user's mode
@@ -331,6 +336,8 @@ void note_input_enqueue(uint8_t on, uint8_t note, uint8_t velocity, bool from_bl
     // all-off path, and the dispatch layer refuses any energize anyway
     // (SAFETY.md rule 9); this keeps refused notes out of the queue.
     if (ble_ota_session_active()) return;
+    // The disconnect stop is discarding what the lost source left behind.
+    if (from_ble && s_discardBleNotes) return;
     if (from_ble && appState.inputMode == INPUT_MODE_TOUCH_ONLY) return;
     if (!from_ble && appState.inputMode == INPUT_MODE_BLE_ONLY) return;
     enqueueEvent(on, note, velocity);
@@ -1834,6 +1841,16 @@ void loop() {
     // and explicit "save" cover persistence.
     if (g_requestStopFromDisconnect) {
         g_requestStopFromDisconnect = false;
+        // Whatever the source sent just before the link dropped may still sit
+        // unparsed in the BLE-MIDI library's 64-byte queue. Parse it now with
+        // its notes discarded, or the read below would strike them AFTER this
+        // stop, with no NoteOff ever coming (the hold watchdog would have to
+        // end them). 64 reads empty the queue: each consumes at least a byte.
+        // A CC64 in there is forgotten below; a CC 120/121/123 just asks for
+        // the all-off this block does anyway.
+        s_discardBleNotes = true;
+        for (int i = 0; i < 64 && MIDI.read(); i++) {}
+        s_discardBleNotes = false;
         flushEventQueue();       // discard any MIDI events queued before the drop
         allKeysOff();            // release outputs + clear every deferred timer
         clearLedReactive();      // and drop any sustained LEDs
@@ -1876,7 +1893,14 @@ void loop() {
     // the library's 64-byte queue (about 21 messages) blocks the NimBLE task
     // when it is full: a chord now reaches dispatch in one pass. The event
     // drain below keeps its own cap of 24, and delay(1) at the end stays.
-    for (int i = 0; i < 32 && MIDI.read(); i++) {}
+    //
+    // The read stops at a stop: once a CC 120/121/123 has been parsed, or the
+    // link has dropped, nothing more is read in this pass. The stop is serviced
+    // at the top of the next pass and the rest is read after it — so a note
+    // the source sent AFTER its all-off is not cut by that all-off (reading
+    // one message a pass used to keep that order by itself), and bytes left
+    // by a lost source go to the disconnect stop, which discards their notes.
+    for (int i = 0; i < 32 && !g_requestAllOff && !g_requestStopFromDisconnect && MIDI.read(); i++) {}
 
     // Drain events for solenoid dispatch. CAP per iteration so a burst can't
     // monopolize the core with back-to-back blocking I²C writes and starve
