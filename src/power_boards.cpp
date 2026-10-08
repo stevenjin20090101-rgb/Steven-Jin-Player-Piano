@@ -91,6 +91,12 @@ static uint32_t s_onAt[8][12] = {{0}};   // [board_idx][semitone]
 // lastEnergizeMs() by the firmware update's quiet rule (BLE_OTA.md §7).
 static uint32_t s_lastEnergizeMs = 0;
 
+// How many times the hold watchdog (tickAutoRelease, rule 3) has had to let a
+// key go since boot. Counted once per trip: a release that fails retries
+// through s_needOff, not through the ceiling test. Diagnostics only
+// (docs/BLE_DIAG.md `!trips`).
+static uint32_t s_watchdogTrips = 0;
+
 static inline void armOnAt(int board_idx, uint8_t semitone, uint32_t now) {
     uint32_t stamp = millis();
     s_lastEnergizeMs = stamp ? stamp : 1;   // 0 means "never" — not a real energize
@@ -939,6 +945,7 @@ void tickAutoRelease() {
             // (b) Held longer than the safety timeout — force release.
             uint32_t t = s_onAt[i][s];
             if (t != 0 && (now - t) >= g_maxHoldMs) {
+                s_watchdogTrips++;
                 if (!tryChannelOff(i, s)) anyPending = true;
 #if DEBUG_DISPATCH
                 else Serial.printf("[auto-release] board %d ch=%u after %lu ms\n",
@@ -1067,6 +1074,21 @@ bool coilsVerifiedOff() {
 }
 
 uint32_t lastEnergizeMs() { return s_lastEnergizeMs; }
+
+// ---- Diagnostics (docs/BLE_DIAG.md), read-only ---------------------------------
+// Channels believed energized now (armed in the RAM model), and the hold
+// watchdog's releases since boot. Neither clears or changes anything.
+int coilsEnergizedCount() {
+    int n = 0;
+    for (int i = 0; i < kNumPowerBoards; i++) {
+        for (uint8_t s = 0; s < 12; s++) {
+            if (s_onAt[i][s] != 0) n++;
+        }
+    }
+    return n;
+}
+
+uint32_t watchdogTrips() { return s_watchdogTrips; }
 
 // Force every PCA9685 channel on every chip to FULL_OFF in one I²C
 // transaction via the ALLCALL address. Works even if a chip's primary

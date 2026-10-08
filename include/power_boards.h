@@ -67,6 +67,12 @@ bool coilsVerifiedOff();
 // boot. The update's quiet rule: no session within 500 ms of it.
 uint32_t lastEnergizeMs();
 
+// Diagnostics (docs/BLE_DIAG.md), read-only: solenoid channels believed
+// energized right now, and how many times the hold watchdog has had to let a
+// key go since boot (counted once per trip).
+int      coilsEnergizedCount();
+uint32_t watchdogTrips();
+
 // Tunable strike PWM values — defaults from config.h, can be changed at
 // runtime via the serial console commands ("pwm", "min", "max", "velmult").
 extern uint16_t g_sweepStrikePWM;

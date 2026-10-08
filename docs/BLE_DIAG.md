@@ -48,3 +48,22 @@ stay as they are: the System page shows those today.
 Nothing breaks. The controller's card shows what 2.0.0 has (firmware, update state, uptime, power boards, I²C
 errors, pedal board, repeat period) and marks temperature, memory, tasks and signal as waiting for newer piano
 firmware. When a fact appears in `dump`, its tile fills in by itself; `!temp` also joins the page's day-long chart.
+
+## The firmware chat's answer (2026-10-08)
+
+All seven are in **2.0.1**, built the same day and not yet on the piano: it gets there with the first update over
+Bluetooth, or over USB. Each is a read-only `!` fact after `!repeatms` in `dump`, answered by `get` with or without
+its `!`, computed when asked (`BLE_SETTINGS.md` § 4 lists the formats):
+
+- **1 `!temp`** — `temperatureRead()` on demand, one decimal; empty if the sensor gives nothing.
+- **2 `!heap` `!heapmin` `!heapblock` `!heapsize`** — the four `ESP.*` figures, bytes.
+- **3 `!reset` `!crashes`** — `!reset` adds `usb` from the ROM's own reason (the IDF reports the S3's USB-serial
+  reset as UNKNOWN); `!crashes` is the crash counter as counted at this boot (crash resets in a row), which the
+  firmware clears after 30 s of healthy uptime.
+- **4 `!tasks` `!stack` `!taskstack`** — `!taskstack` names only the two tasks the firmware holds handles for
+  (`loop`, `lvgl`): `xTaskGetHandle` is not compiled into the prebuilt SDK.
+- **5 `!looprate` `!loopms`** — two counters at the top of `loop()`, reported for the last whole 5 s window
+  (0 until the first window has passed).
+- **6 `!rssi`** — `ble_gap_conn_rssi` on the first connection; empty with no central.
+- **7 `!active` `!trips`** — channels believed energized now; hold-watchdog releases since boot, counted once
+  per trip.

@@ -30,6 +30,7 @@
 #include <esp_task_wdt.h>
 #include <esp_system.h>
 #include <esp_timer.h>
+#include <esp32s3/rom/rtc.h>   // rtc_get_reset_reason(): tells a USB reset apart (diagnostics)
 
 #include "config.h"
 #include "ui.h"
@@ -847,6 +848,100 @@ static void boardsValue(char *buf, size_t len) {
     }
 }
 
+// ---- Diagnostics facts (docs/BLE_DIAG.md) -----------------------------------
+// For the app's System page: read-only `!` facts in dump/get, each computed
+// when asked, in the console handler. Nothing new runs in the dispatch path
+// except the two loop counters (countLoopPass: one add and one compare a pass).
+
+static uint8_t s_bootCrashCount = 0;   // crash resets in a row, as counted at this boot
+
+// Why the controller last started, in the words BLE_DIAG.md lists. The IDF
+// reports the S3's USB-serial reset (the port being opened on a Mac) as
+// UNKNOWN; the ROM's own reason tells it apart from a real cold boot.
+static const char *resetWord() {
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:  return "poweron";
+        case ESP_RST_SW:       return "software";
+        case ESP_RST_PANIC:    return "panic";
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:      return "watchdog";
+        case ESP_RST_BROWNOUT: return "brownout";
+        default:               break;
+    }
+    const RESET_REASON rom = rtc_get_reset_reason(0);
+    if (rom == USB_UART_CHIP_RESET || rom == USB_JTAG_CHIP_RESET) return "usb";
+    return "other";
+}
+
+// The die temperature now, one decimal; empty if the sensor gives nothing.
+static void tempValue(char *buf, size_t len) {
+    const float t = temperatureRead();
+    if (isnan(t)) { buf[0] = '\0'; return; }
+    snprintf(buf, len, "%.1f", (double)t);
+}
+
+// loop() passes a second and the longest single pass (entry to entry), each
+// for the last whole 5 s window; 0 until the first window has passed.
+static const int64_t kLoopWindowUs      = 5000000;
+static int64_t       s_loopWindowStartUs = 0;
+static int64_t       s_loopPrevEntryUs   = 0;
+static uint32_t      s_loopPasses        = 0;
+static uint32_t      s_loopLongestUs     = 0;
+static uint32_t      s_loopRate          = 0;   // the last window's passes a second
+static uint32_t      s_loopLongestMsX10  = 0;   // its longest pass, tenths of a millisecond
+
+static void countLoopPass() {
+    const int64_t now = esp_timer_get_time();
+    if (s_loopWindowStartUs == 0) {
+        s_loopWindowStartUs = now;
+        s_loopPrevEntryUs   = now;
+        return;
+    }
+    const uint32_t gap = (uint32_t)(now - s_loopPrevEntryUs);
+    s_loopPrevEntryUs = now;
+    s_loopPasses++;
+    if (gap > s_loopLongestUs) s_loopLongestUs = gap;
+    const int64_t span = now - s_loopWindowStartUs;
+    if (span >= kLoopWindowUs) {
+        s_loopRate          = (uint32_t)(((uint64_t)s_loopPasses * 1000000ULL) / (uint64_t)span);
+        s_loopLongestMsX10  = (s_loopLongestUs + 50) / 100;
+        s_loopWindowStartUs = now;
+        s_loopPasses        = 0;
+        s_loopLongestUs     = 0;
+    }
+}
+
+static void loopMsValue(char *buf, size_t len) {
+    snprintf(buf, len, "%lu.%lu", (unsigned long)(s_loopLongestMsX10 / 10),
+             (unsigned long)(s_loopLongestMsX10 % 10));
+}
+
+// "loop:<bytes>,lvgl:<bytes>": the stack never used by the tasks the firmware
+// holds handles for. (xTaskGetHandle, which would name the rest, is not
+// compiled into the prebuilt SDK.)
+static void taskStackValue(char *buf, size_t len) {
+    const unsigned loopFree = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+    if (s_lvgl_task != nullptr) {
+        snprintf(buf, len, "loop:%u,lvgl:%u", loopFree,
+                 (unsigned)uxTaskGetStackHighWaterMark(s_lvgl_task));
+    } else {
+        snprintf(buf, len, "loop:%u", loopFree);
+    }
+}
+
+// The link's signal as the piano hears it, dBm, read from the controller when
+// asked; empty when no central is connected.
+static void rssiValue(char *buf, size_t len) {
+    buf[0] = '\0';
+    NimBLEServer *srv = NimBLEDevice::getServer();
+    if (srv == nullptr || srv->getConnectedCount() == 0) return;
+    int8_t rssi = 0;
+    if (ble_gap_conn_rssi(srv->getPeerInfo(0).getConnHandle(), &rssi) == 0) {
+        snprintf(buf, len, "%d", (int)rssi);
+    }
+}
+
 #define FACT_ROW(nm, fmt, expr) \
     { nm, true,  [](char *b, size_t n) { snprintf(b, n, fmt, expr); } }
 #define INT_ROW(nm, expr) \
@@ -870,6 +965,22 @@ static const SettingRow kSettingRows[] = {
     // current settings: the minimum strike, the retrigger gap, and one safety
     // tick of lateness each for the deferred release and the deferred strike.
     FACT_ROW("repeatms",   "%lu", (unsigned long)(g_minStrikeMs + g_minRetriggerGapMs + 2 * kSafetyTickMs)),
+    // Diagnostics for the app's System page (docs/BLE_DIAG.md), read when asked.
+    { "temp",      true, tempValue },
+    FACT_ROW("heap",       "%u",  (unsigned)ESP.getFreeHeap()),
+    FACT_ROW("heapmin",    "%u",  (unsigned)ESP.getMinFreeHeap()),
+    FACT_ROW("heapblock",  "%u",  (unsigned)ESP.getMaxAllocHeap()),
+    FACT_ROW("heapsize",   "%u",  (unsigned)ESP.getHeapSize()),
+    FACT_ROW("reset",      "%s",  resetWord()),
+    FACT_ROW("crashes",    "%u",  (unsigned)s_bootCrashCount),
+    FACT_ROW("tasks",      "%u",  (unsigned)uxTaskGetNumberOfTasks()),
+    FACT_ROW("stack",      "%u",  (unsigned)uxTaskGetStackHighWaterMark(NULL)),
+    { "taskstack", true, taskStackValue },
+    FACT_ROW("looprate",   "%lu", (unsigned long)s_loopRate),
+    { "loopms",    true, loopMsValue },
+    { "rssi",      true, rssiValue },
+    FACT_ROW("active",     "%d",  coilsEnergizedCount()),
+    FACT_ROW("trips",      "%lu", (unsigned long)watchdogTrips()),
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
@@ -1628,7 +1739,8 @@ void setup() {
     // saved settings. settings_boot_reset() in loop() clears the counter
     // once we've been running stably for 30 s. The count is kept for this
     // boot: in safe mode a firmware update is refused (ERR 10).
-    g_crashSafeMode = (settings_boot_inc() >= 3);
+    s_bootCrashCount = settings_boot_inc();
+    g_crashSafeMode  = (s_bootCrashCount >= 3);   // `!crashes` reports the count
 
     // *** EARLIEST fire-safety release ***
     // The PCA9685s hold their last PWM state across an ESP reset — a coil that
@@ -1819,6 +1931,7 @@ void setup() {
 
 void loop() {
     esp_task_wdt_reset();   // feed the hardware watchdog — see setup()
+    countLoopPass();        // !looprate / !loopms (docs/BLE_DIAG.md)
 
     // --- Safety FIRST, every iteration, before any note dispatch ---
     // Run the release watchdog + deferred-timer drain at the very top so a

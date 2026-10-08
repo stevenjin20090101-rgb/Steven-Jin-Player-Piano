@@ -114,6 +114,21 @@ Read-only facts are prefixed `!`. Exact list and order:
 !pedalboard=absent|online
 !uptime=<seconds>
 !repeatms=<ms>                     (the shortest steady same-key repeat period the piano honours now, see below)
+!temp=<°C, one decimal>             (diagnostics, docs/BLE_DIAG.md, from 2.0.1: the die temperature, read when asked; empty if the sensor gives nothing)
+!heap=<bytes>                       (free heap now)
+!heapmin=<bytes>                    (lowest free heap since boot)
+!heapblock=<bytes>                  (largest free block)
+!heapsize=<bytes>                   (the heap's whole size)
+!reset=poweron|software|panic|watchdog|brownout|usb|other
+!crashes=<n>                        (crash resets in a row, as counted at this boot; cleared after 30 s of healthy uptime)
+!tasks=<n>                          (FreeRTOS tasks)
+!stack=<bytes>                      (the loop task's stack never used)
+!taskstack=loop:<bytes>,lvgl:<bytes>
+!looprate=<passes per second>       (over the last whole 5 s; 0 until the first window has passed)
+!loopms=<ms, one decimal>           (the longest loop pass in that window)
+!rssi=<dBm>                         (the link's signal as the piano hears it; empty with no central connected)
+!active=<n>                         (solenoid channels believed energized now)
+!trips=<n>                          (hold-watchdog releases since boot)
 leds=0|1
 ledmode=0..3
 ledbright=0..255
@@ -167,6 +182,10 @@ and ignores them) is the shortest steady same-key repeat period the dispatch lay
 with the current settings, `minstrike + gap + 2 × 10 ms` (each deferred release and deferred
 strike runs on the 10 ms safety tick); it changes when `minstrike` or `gap` does. The first
 repeat after a lone note can additionally wait up to `isostrike − minstrike`.
+
+The diagnostics facts from `!temp` to `!trips` (added 2026-10-08 for 2.0.1, docs/BLE_DIAG.md) are compatible
+additions of the same kind: read-only, computed when asked, listed after `!repeatms`. Two values can be empty
+(`!temp` when the sensor gives nothing, `!rssi` with no central connected); a client shows an empty row.
 
 **`get <name>`** prints the single `name=value` line for any name in the list above
 (including the `!` facts), or `  unknown setting` for anything else. The name may be given
