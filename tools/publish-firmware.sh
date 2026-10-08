@@ -48,7 +48,7 @@ REPO="stevenjin20090101-rgb/Steven-Jin-Player-Piano"
 PIO_ENV="lilygo-t4-s3"
 SLOT_BYTES=6553600                    # app0 / app1 in default_16MB.csv: 0x640000
 APP_CAP_BYTES=$((4 * 1024 * 1024))    # the app refuses a larger firmware download
-CO_AUTHOR="Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+CO_AUTHOR="Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 die() {
     echo "publish-firmware: $*" >&2
