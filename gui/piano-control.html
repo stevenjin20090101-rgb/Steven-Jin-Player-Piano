@@ -308,6 +308,33 @@
     </div>
   </div>
 
+  <!-- I²C signal test (bench: scope the trunk) -->
+  <div class="card">
+    <h2>I²C signal test <small style="text-transform:none;letter-spacing:0">(scope the trunk)</small></h2>
+    <div class="hint">Puts a test signal on the power-board bus for the oscilloscope. Every coil is confirmed off first, and the bus comes back by itself when the test ends. USB only.</div>
+    <div class="row">
+      <span class="label">Output</span>
+      <select id="i2cwave-out">
+        <option value="bus">Real bus traffic — clock on SCL, address + ACK on SDA</option>
+        <option value="scl">Square wave on SCL (SDA held high)</option>
+        <option value="sda">Square wave on SDA (SCL held high)</option>
+        <option value="both">Square wave on both lines</option>
+      </select>
+    </div>
+    <div class="row" id="i2cwave-hz-row">
+      <span class="label">Frequency <small>(Hz, 10 to 2,000,000)</small></span>
+      <input type="number" id="i2cwave-hz" value="400000" min="10" max="2000000">
+    </div>
+    <div class="row">
+      <span class="label">Duration <small>(seconds, up to 30)</small></span>
+      <input type="number" id="i2cwave-secs" value="5" min="1" max="30">
+    </div>
+    <div class="btn-row">
+      <button id="i2cwave-btn">▶ Start signal test</button>
+    </div>
+    <div class="hint">Real bus traffic ends with an ACK count per board: a board at 0 is not reachable through the isolator and cable. Nothing is ever written to a board.</div>
+  </div>
+
   <!-- LED lighting -->
   <div class="card">
     <h2>LED lighting</h2>
@@ -813,6 +840,20 @@ $("test-min-white").addEventListener("click", () => sendCmd("testmin 60"));
 $("test-max-white").addEventListener("click", () => sendCmd("testmax 60"));
 $("test-min-black").addEventListener("click", () => sendCmd("testmin 61"));
 $("test-max-black").addEventListener("click", () => sendCmd("testmax 61"));
+
+// I²C signal test: the output picks the i2cwave mode; the frequency only
+// applies to the square-wave modes (real traffic runs at the bus's own clock).
+$("i2cwave-out").addEventListener("change", () => {
+  $("i2cwave-hz-row").style.display = ($("i2cwave-out").value === "bus") ? "none" : "";
+});
+$("i2cwave-out").dispatchEvent(new Event("change"));
+$("i2cwave-btn").addEventListener("click", () => {
+  const out  = $("i2cwave-out").value;
+  const secs = Math.min(30, Math.max(1, Math.round(+$("i2cwave-secs").value) || 5));
+  if (out === "bus") { sendCmd(`i2cwave bus ${secs}`); return; }
+  const hz = Math.min(2000000, Math.max(10, Math.round(+$("i2cwave-hz").value) || 400000));
+  sendCmd(`i2cwave ${out} ${hz} ${secs}`);
+});
 $("clear-log").addEventListener("click",     () => { $("log").innerHTML = ""; });
 
 // --- Test note ---------------------------------------------------------------
