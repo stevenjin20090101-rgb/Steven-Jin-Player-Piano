@@ -147,6 +147,9 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
   open-drain pad, so the trace after the isolator and down the trunk is the real one the bus would carry.
   Frequency 10 Hz to 2 MHz, up to 30 s. It only runs once every coil is verified off, holds the bus for the
   whole test, then brings the bus back up, re-probes the boards and sends the boot's all-off sequence.
+  `i2cwave bus 10` sends real traffic instead — address probes to every power board, hundreds a second,
+  nothing written — so the scope shows the true 400 kHz clock on SCL and the far side's ACK on SDA; it
+  ends with an ACK count per board, which says which boards are reachable through the isolator and trunk.
 
 | Symptom | Likely cause / fix |
 |---|---|

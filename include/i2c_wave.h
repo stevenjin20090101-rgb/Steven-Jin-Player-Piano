@@ -18,7 +18,9 @@
 #pragma once
 #include <Arduino.h>
 
-// `which` is "scl", "sda" or "both"; `hz` 10..2,000,000; `seconds` 1..30.
+// `which` is "scl", "sda" or "both" (a square wave; `hz` 10..2,000,000) or
+// "bus" (real address probes to every power board, `hz` ignored); `seconds`
+// 1..30.
 // Prints what it does to `out`. False when refused or when the wave could not
 // be started (the bus is restored either way).
 bool i2c_wave_run(const char *which, uint32_t hz, uint32_t seconds, Print &out);

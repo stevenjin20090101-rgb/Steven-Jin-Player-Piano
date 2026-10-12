@@ -19,6 +19,13 @@
 // in phase; a chip would need a mistimed edge to read it as a START, and even
 // then the test began with every coil verified off and ends with the all-off
 // sequence — an energize could last seconds, not minutes.
+//
+// `bus` is different: real traffic. An address probe (START, the address, the
+// chip's ACK or a NACK, STOP) goes to each power board in turn, hundreds of
+// times a second, with the bus driver running as usual — so the scope sees
+// the real 400 kHz clock on SCL and, on SDA, the address bits from this side
+// and the ACK pulled low by the far side through the isolator. Probes only:
+// nothing is ever written to a chip.
 #include "i2c_wave.h"
 #include "config.h"
 #include "power_boards.h"
@@ -63,13 +70,14 @@ bool i2c_wave_run(const char *which, uint32_t hz, uint32_t seconds, Print &out) 
     out.println("  i2cwave needs the isolated board (its own power-board bus); on this board the PCAs share the touch bus");
     return false;
 #else
+    const bool bus = !strcmp(which, "bus");
     const bool scl = !strcmp(which, "scl") || !strcmp(which, "both");
     const bool sda = !strcmp(which, "sda") || !strcmp(which, "both");
-    if (!scl && !sda) {
-        out.println("  usage: i2cwave scl|sda|both <hz 10..2000000> [seconds 1..30]");
+    if (!scl && !sda && !bus) {
+        out.println("  usage: i2cwave scl|sda|both <hz 10..2000000> [seconds 1..30]  |  i2cwave bus [seconds 1..30]");
         return false;
     }
-    if (hz < kMinHz || hz > kMaxHz) {
+    if (!bus && (hz < kMinHz || hz > kMaxHz)) {
         out.println("  i2cwave: hz out of range (10..2000000)");
         return false;
     }
@@ -87,6 +95,31 @@ bool i2c_wave_run(const char *which, uint32_t hz, uint32_t seconds, Print &out) 
         out.println("  i2cwave refused: a coil is not verified off (a board off the bus still believed on?) — see status");
         return false;
     }
+    if (bus) {
+        // Real traffic, probes only (see the top of the file). The bus stays up.
+        uint32_t acks[8] = {0};
+        uint32_t rounds = 0;
+        out.printf("  i2cwave: every coil verified off — probing %d power boards in turn for %lu s, scope SCL/SDA now\n",
+                   kNumPowerBoards, (unsigned long)seconds);
+        const uint32_t until = millis() + seconds * 1000UL;
+        while ((int32_t)(millis() - until) < 0) {
+            for (int i = 0; i < kNumPowerBoards && i < 8; i++) {
+                if (powerBoards[i].chip.isConnected()) acks[i]++;
+                delayMicroseconds(300);             // a gap the scope can trigger on
+            }
+            rounds++;
+            if ((rounds & 31) == 0) esp_task_wdt_reset();
+        }
+        out.printf("  %lu rounds — ACKs:", (unsigned long)rounds);
+        for (int i = 0; i < kNumPowerBoards && i < 8; i++) {
+            out.printf(" 0x%02X=%lu", powerBoards[i].chip.address(), (unsigned long)acks[i]);
+        }
+        out.println("\n  (a board that never ACKs is not reachable through the isolator and trunk)");
+        allKeysOff();
+        set_energize_inhibit(false);
+        return true;
+    }
+
     out.printf("  i2cwave: every coil verified off — taking the power-board bus down for %lu s\n",
                (unsigned long)seconds);
     PCA_BUS.end();

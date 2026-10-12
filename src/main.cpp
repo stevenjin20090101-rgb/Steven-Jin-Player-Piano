@@ -674,6 +674,7 @@ static void printHelp() {
         "    reset                    wipe saved settings; reboot to revert to defaults\n"
         "    sweep                    re-run the test sweep\n"
         "    i2cwave scl|sda|both <hz> [s]  square wave on the power-board bus lines for the scope (USB only; coils verified off first)\n"
+        "    i2cwave bus [s]          real I2C probes to every power board for the scope (clock + ACK; USB only)\n"
         "    pwm <0..4095>            set sweep PWM + run a sweep\n"
         "    min <0..4095>            set velocity=1 PWM floor\n"
         "    max <0..4095>            set velocity=127 PWM ceiling\n"
@@ -1185,8 +1186,12 @@ static void handleLine(char *line, ConsoleSource source) {
         if (ble_ota_session_active()) { Console.println("  refused — updating firmware"); return; }
         char which[8] = "";
         unsigned long hz = 0, secs = 5;
-        if (sscanf(line + 7, "%7s %lu %lu", which, &hz, &secs) < 2) {
-            Console.println("  usage: i2cwave scl|sda|both <hz 10..2000000> [seconds 1..30]");
+        const int got = sscanf(line + 7, "%7s %lu %lu", which, &hz, &secs);
+        if (got >= 1 && !strcmp(which, "bus")) {          // bus [seconds]: no frequency
+            secs = (got >= 2) ? hz : 5;
+            hz = 0;
+        } else if (got < 2) {
+            Console.println("  usage: i2cwave scl|sda|both <hz 10..2000000> [seconds 1..30]  |  i2cwave bus [seconds 1..30]");
             return;
         }
         flushEventQueue();
