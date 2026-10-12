@@ -7,10 +7,12 @@
 //  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
 // ============================================================================
 // See include/i2c_wave.h. The wave comes from the LEDC peripheral (exact
-// frequency, no CPU), on an OPEN-DRAIN pad: the pin only ever pulls the line
-// low and lets go, so the high level and the rising edge are made by the
-// line's own pull-up and isolator — the waveform the scope shows is the one a
-// real I²C transaction would have, not a push-pull drive fighting the bus.
+// frequency, no CPU) and is DRIVEN both ways (push-pull) at the pad's weakest
+// drive strength (~5 mA): a full 0–3.3 V square wave whether or not the line
+// has a powered pull-up (the bench usually has none on the controller side —
+// an open-drain wave just sat flat there). The weak drive keeps the current
+// small if anything on the bus pulls the line low against it. The other line
+// is driven high the same way while one line carries the wave.
 //
 // Why the single-line modes are the safe ones: with SDA held high nothing on
 // the bus can see a START, so clock pulses on SCL are ignored by every chip;
@@ -60,7 +62,7 @@ static const char *modeName(WaveMode m) {
     }
 }
 
-// A 50 % square wave at `hz` on `pin`, open-drain.
+// A 50 % square wave at `hz` on `pin`, push-pull at the weakest drive.
 static bool startWave(uint8_t pin, uint8_t chan, uint32_t hz, Print &out) {
     // The widest duty resolution the LEDC clock allows at this frequency, so
     // 50 % is exact to within one clock. On the S3 the core runs LEDC from the
@@ -79,10 +81,20 @@ static bool startWave(uint8_t pin, uint8_t chan, uint32_t hz, Print &out) {
         return false;
     }
     ledcAttachPin(pin, chan);
-    gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT_OD);   // after the attach: keep the routing, drop the push-pull
+    gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT);
+    gpio_set_drive_capability((gpio_num_t)pin, GPIO_DRIVE_CAP_0);
     ledcWrite(chan, 1u << (bits - 1));
-    out.printf("  GPIO %u: %.0f Hz, open-drain (the pull-up makes the high level)\n", pin, got);
+    out.printf("  GPIO %u: %.0f Hz square wave, driven 0-3.3 V (weak drive)\n", pin, got);
     return true;
+}
+
+// The line that does not carry the wave: driven high (weakly), so no chip can
+// see a START or an address on it.
+static void holdHigh(uint8_t pin) {
+    gpio_reset_pin((gpio_num_t)pin);
+    gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT);
+    gpio_set_drive_capability((gpio_num_t)pin, GPIO_DRIVE_CAP_0);
+    gpio_set_level((gpio_num_t)pin, 1);
 }
 
 static void stopWave(uint8_t pin, uint8_t chan) {
@@ -141,6 +153,8 @@ bool i2c_wave_start(const char *which, uint32_t hz, uint32_t seconds, Print &out
         out.println("  i2cwave: every coil verified off — taking the power-board bus down");
         PCA_BUS.end();
         bool ok = true;
+        if (!scl) holdHigh(I2C_SCL_PIN);
+        if (!sda) holdHigh(I2C_SDA_PIN);
         if (scl) ok = startWave(I2C_SCL_PIN, kChanScl, hz, out) && ok;
         if (sda) ok = startWave(I2C_SDA_PIN, kChanSda, hz, out) && ok;
         if (!ok) {
@@ -179,6 +193,8 @@ void i2c_wave_stop(Print &out) {
     } else {
         if (mode == WAVE_SCL || mode == WAVE_BOTH) stopWave(I2C_SCL_PIN, kChanScl);
         if (mode == WAVE_SDA || mode == WAVE_BOTH) stopWave(I2C_SDA_PIN, kChanSda);
+        gpio_set_direction((gpio_num_t)I2C_SCL_PIN, GPIO_MODE_INPUT);   // the held-high line too
+        gpio_set_direction((gpio_num_t)I2C_SDA_PIN, GPIO_MODE_INPUT);
         // The bus back exactly as setup() brings it up, then the boot's own
         // safety sequence: three ALLCALL all-offs, every board re-probed and
         // configured, every channel released through the verified-OFF path.

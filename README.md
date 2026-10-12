@@ -143,8 +143,8 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 ## Troubleshooting
 
 - **Scoping the power-board bus.** `i2cwave scl 400000 10` (USB console only) puts a clean 400 kHz square
-  wave on SCL for 10 s with SDA held high — `sda` for the other line, `both` for the two together — on an
-  open-drain pad, so the trace after the isolator and down the trunk is the real one the bus would carry.
+  wave on SCL for 10 s with SDA held high — `sda` for the other line, `both` for the two together — driven
+  0–3.3 V at the pad's weakest drive, so it shows whether or not the line has a powered pull-up.
   Frequency 10 Hz to 2 MHz. With no seconds given it runs until `i2cwave stop` (10 minutes at most); the
   piano's screen reads "Signal test: …" and `status` says so while it is on. It only starts once every coil
   is verified off, holds the bus for the whole test (notes are dropped and energize commands refused
