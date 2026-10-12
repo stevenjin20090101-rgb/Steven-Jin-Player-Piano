@@ -338,6 +338,8 @@ void note_input_enqueue(uint8_t on, uint8_t note, uint8_t velocity, bool from_bl
     // all-off path, and the dispatch layer refuses any energize anyway
     // (SAFETY.md rule 9); this keeps refused notes out of the queue.
     if (ble_ota_session_active()) return;
+    // A bench signal test holds the bus (i2c_wave.h): notes are dropped too.
+    if (i2c_wave_active()) return;
     // The disconnect stop is discarding what the lost source left behind.
     if (from_ble && s_discardBleNotes) return;
     if (from_ble && appState.inputMode == INPUT_MODE_TOUCH_ONLY) return;
@@ -604,6 +606,7 @@ static uint32_t s_lastNoteActivityMs = 0;
 // the energize inhibit is already set and the note funnel already drops notes;
 // the session then waits for coilsVerifiedOff() before it sends READY.
 void piano_stop_for_update() {
+    if (i2c_wave_active()) i2c_wave_stop(Serial);   // the bus must be up before the stop below
     flushEventQueue();       // queued notes would only be refused now: drop them
     allKeysOff();            // release every coil, wipe every deferred strike/release/cushion
     clearLedReactive();      // no sustained LEDs
@@ -675,6 +678,7 @@ static void printHelp() {
         "    sweep                    re-run the test sweep\n"
         "    i2cwave scl|sda|both <hz> [s]  square wave on the power-board bus lines for the scope (USB only; coils verified off first)\n"
         "    i2cwave bus [s]          real I2C probes to every power board for the scope (clock + ACK; USB only)\n"
+        "    i2cwave stop             end the signal test (no seconds given = it runs until stopped)\n"
         "    pwm <0..4095>            set sweep PWM + run a sweep\n"
         "    min <0..4095>            set velocity=1 PWM floor\n"
         "    max <0..4095>            set velocity=127 PWM ceiling\n"
@@ -743,6 +747,7 @@ static void printStatus() {
                    (unsigned)uxTaskGetStackHighWaterMark(NULL),
                    (unsigned)getArduinoLoopTaskStackSize());
     ble_console_print_status(Console);
+    i2c_wave_print_status(Console);
     Console.printf("  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
                    g_sweepStrikePWM, g_minStrikePWM, g_maxStrikePWM,
                    (unsigned long)g_maxHoldMs, g_velocityMult);
@@ -1099,6 +1104,10 @@ static void handleLine(char *line, ConsoleSource source) {
         Console.println("  refused — updating firmware");
         return;
     }
+    if (i2c_wave_active() && energizesCoils(line)) {
+        Console.println("  refused — signal test running (`i2cwave stop` ends it)");
+        return;
+    }
 
     if (!strcmp(line, "help") || !strcmp(line, "?")) {
         printHelp();
@@ -1116,6 +1125,7 @@ static void handleLine(char *line, ConsoleSource source) {
         if (row) printSettingRow(*row);
         else     Console.println("  unknown setting");
     } else if (!strcmp(line, "off")) {
+        if (i2c_wave_active()) i2c_wave_stop(Console);   // the bus must be up for a release
         allKeysOff();
         clearLedReactive();
         pedal_release();          // pedal up → dampers drop → ringing stops
@@ -1128,6 +1138,7 @@ static void handleLine(char *line, ConsoleSource source) {
         // Emergency stop. Hammers ALLCALL FULL_OFF five times with delays
         // to defeat bus glitches that single broadcasts might lose. Also
         // forces Full Power mode so any further notes don't use PWM.
+        if (i2c_wave_active()) i2c_wave_stop(Console);   // the bus must be up for a release
         for (int i = 0; i < 5; ++i) { broadcastAllOff(); delay(40); }
         allKeysOff();
         clearLedReactive();
@@ -1185,18 +1196,22 @@ static void handleLine(char *line, ConsoleSource source) {
         // inhibited — the module does that — and never during an update.
         if (ble_ota_session_active()) { Console.println("  refused — updating firmware"); return; }
         char which[8] = "";
-        unsigned long hz = 0, secs = 5;
+        unsigned long hz = 0, secs = 0;                     // 0 = until stopped
         const int got = sscanf(line + 7, "%7s %lu %lu", which, &hz, &secs);
-        if (got >= 1 && !strcmp(which, "bus")) {          // bus [seconds]: no frequency
-            secs = (got >= 2) ? hz : 5;
+        if (got >= 1 && !strcmp(which, "stop")) {
+            if (i2c_wave_active()) { i2c_wave_stop(Console); flushEventQueue(); }
+            else Console.println("  signal test: not running");
+            return;
+        }
+        if (got >= 1 && !strcmp(which, "bus")) {            // bus [seconds]: no frequency
+            secs = (got >= 2) ? hz : 0;
             hz = 0;
         } else if (got < 2) {
-            Console.println("  usage: i2cwave scl|sda|both <hz 10..2000000> [seconds 1..30]  |  i2cwave bus [seconds 1..30]");
+            Console.println("  usage: i2cwave scl|sda|both <hz 10..2000000> [seconds]  |  i2cwave bus [seconds]  |  i2cwave stop");
             return;
         }
         flushEventQueue();
-        i2c_wave_run(which, (uint32_t)hz, (uint32_t)secs, Console);
-        flushEventQueue();       // notes that arrived while the bus was down would strike now
+        i2c_wave_start(which, (uint32_t)hz, (uint32_t)secs, Console);
     } else if (!strcmp(line, "sweep")) {
         testSweepAllBoards();
     } else if (!strncmp(line, "pwm ", 4)) {
@@ -1961,7 +1976,12 @@ void loop() {
     // These are cheap (a few hundred cmp ops) and touch only the PCA bus.
     static uint32_t lastSafetyTick = 0;
     uint32_t nowTop = millis();
-    if (nowTop - lastSafetyTick >= kSafetyTickMs) {   // ~100 Hz
+    if (i2c_wave_active()) {
+        // Bench signal test (i2c_wave.h): it holds the bus, every coil was
+        // verified off before it began and nothing can energize until it
+        // ends, so the safety ticks have nothing to do and no bus to do it on.
+        i2c_wave_tick();
+    } else if (nowTop - lastSafetyTick >= kSafetyTickMs) {   // ~100 Hz
         lastSafetyTick = nowTop;
         tickAutoRelease();
         tickPendingFires();
@@ -2115,7 +2135,10 @@ void loop() {
             static char s_otaShown[48] = "";
             char     ota[48];
             uint32_t otaRgb = 0;
-            if (!ble_ota_status_text(ota, sizeof ota, &otaRgb)) ota[0] = '\0';
+            if (!ble_ota_status_text(ota, sizeof ota, &otaRgb)) {
+                if (i2c_wave_status_text(ota, sizeof ota)) otaRgb = 0x60C0FF;   // the bench test, in the update's blue
+                else ota[0] = '\0';
+            }
             if (g_status_dirty || strcmp(ota, s_otaShown) != 0) {
                 g_status_dirty = false;
                 ui_refresh_status();                       // BLE state + peer line
@@ -2198,14 +2221,14 @@ void loop() {
     // from the BLE callback). Change-gated + rate-limited inside, and a no-op
     // when no pedal board is installed. Held up (0 is UP in both pedal modes,
     // and retries a failed lift) while a firmware update runs.
-    pedal_tick(ble_ota_session_active() ? 0 : g_sustainRaw);
+    pedal_tick((ble_ota_session_active() || i2c_wave_active()) ? 0 : g_sustainRaw);
     // (auto-release + pending-fire ticks now run at the TOP of loop() so a
     // note flood can never delay the safety net — see lastSafetyTick above.)
 
     // Health check: every 5 s, re-init any PCA9685 that's stopped acking.
     // Cheap (just an I²C address probe per board) and self-healing if
     // EMI from heavy PWM activity ever browns a chip out.
-    tickChipHealth();
+    if (!i2c_wave_active()) tickChipHealth();   // not while the signal test holds the bus
 
     // Drain anything typed in the serial console (PWM tuning commands).
     pollSerial();

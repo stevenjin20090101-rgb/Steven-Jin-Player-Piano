@@ -311,7 +311,7 @@
   <!-- I²C signal test (bench: scope the trunk) -->
   <div class="card">
     <h2>I²C signal test <small style="text-transform:none;letter-spacing:0">(scope the trunk)</small></h2>
-    <div class="hint">Puts a test signal on the power-board bus for the oscilloscope. Every coil is confirmed off first, and the bus comes back by itself when the test ends. USB only.</div>
+    <div class="hint">Puts a test signal on the power-board bus for the oscilloscope. Every coil is confirmed off first; while it runs the piano's screen reads "Signal test: …" and <b>status</b> says so, and the bus comes back by itself when it ends. USB only.</div>
     <div class="row">
       <span class="label">Output</span>
       <select id="i2cwave-out">
@@ -326,11 +326,12 @@
       <input type="number" id="i2cwave-hz" value="400000" min="10" max="2000000">
     </div>
     <div class="row">
-      <span class="label">Duration <small>(seconds, up to 30)</small></span>
-      <input type="number" id="i2cwave-secs" value="5" min="1" max="30">
+      <span class="label">Duration <small>(seconds; 0 = until you press Stop, 10 min at most)</small></span>
+      <input type="number" id="i2cwave-secs" value="0" min="0" max="600">
     </div>
     <div class="btn-row">
       <button id="i2cwave-btn">▶ Start signal test</button>
+      <button class="danger" id="i2cwave-stop">■ Stop</button>
     </div>
     <div class="hint">Real bus traffic ends with an ACK count per board: a board at 0 is not reachable through the isolator and cable. Nothing is ever written to a board.</div>
   </div>
@@ -849,11 +850,12 @@ $("i2cwave-out").addEventListener("change", () => {
 $("i2cwave-out").dispatchEvent(new Event("change"));
 $("i2cwave-btn").addEventListener("click", () => {
   const out  = $("i2cwave-out").value;
-  const secs = Math.min(30, Math.max(1, Math.round(+$("i2cwave-secs").value) || 5));
+  const secs = Math.min(600, Math.max(0, Math.round(+$("i2cwave-secs").value) || 0));
   if (out === "bus") { sendCmd(`i2cwave bus ${secs}`); return; }
   const hz = Math.min(2000000, Math.max(10, Math.round(+$("i2cwave-hz").value) || 400000));
   sendCmd(`i2cwave ${out} ${hz} ${secs}`);
 });
+$("i2cwave-stop").addEventListener("click", () => sendCmd("i2cwave stop"));
 $("clear-log").addEventListener("click",     () => { $("log").innerHTML = ""; });
 
 // --- Test note ---------------------------------------------------------------
