@@ -42,11 +42,18 @@ static const uint8_t  kChanSda    = 7;
 
 // A 50 % square wave at `hz` on `pin`, open-drain.
 static bool startWave(uint8_t pin, uint8_t chan, uint32_t hz, Print &out) {
-    // The widest duty resolution the 80 MHz LEDC clock allows at this frequency
-    // (capped at 10 bits): 50 % is then exact to within one clock.
+    // The widest duty resolution the LEDC clock allows at this frequency, so
+    // 50 % is exact to within one clock. On the S3 the core runs LEDC from the
+    // 40 MHz crystal (esp32-hal-ledc.c: LEDC_USE_XTAL_CLK), and the divider
+    // must stay >= 1: hz x 2^bits <= 40 MHz. Capped at 10 bits; if the
+    // peripheral still refuses, fewer bits are tried before giving up.
     uint8_t bits = 1;
-    while (bits < 10 && (80000000UL >> (bits + 1)) >= hz) bits++;
-    const double got = ledcSetup(chan, (double)hz, bits);
+    while (bits < 10 && (40000000UL >> (bits + 1)) >= hz) bits++;
+    double got = 0;
+    for (; bits >= 1; bits--) {
+        got = ledcSetup(chan, (double)hz, bits);
+        if (got > 0) break;
+    }
     if (got <= 0) {
         out.printf("  i2cwave: the LEDC peripheral refused %lu Hz for GPIO %u\n", (unsigned long)hz, pin);
         return false;
