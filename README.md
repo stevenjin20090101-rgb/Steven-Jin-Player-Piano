@@ -142,6 +142,12 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 
 ## Troubleshooting
 
+- **Scoping the power-board bus.** `i2cwave scl 400000 10` (USB console only) puts a clean 400 kHz square
+  wave on SCL for 10 s with SDA held high — `sda` for the other line, `both` for the two together — on an
+  open-drain pad, so the trace after the isolator and down the trunk is the real one the bus would carry.
+  Frequency 10 Hz to 2 MHz, up to 30 s. It only runs once every coil is verified off, holds the bus for the
+  whole test, then brings the bus back up, re-probes the boards and sends the boot's all-off sequence.
+
 | Symptom | Likely cause / fix |
 |---|---|
 | BLE receives but piano silent, boards `MISSING` | Power-board side unpowered, trunk unplugged, or `BOARD_REV` mismatch. Boards auto-join within 5 s of power returning. |

@@ -41,6 +41,7 @@
 #include "console_out.h"
 #include "ble_console.h"
 #include "ble_ota.h"
+#include "i2c_wave.h"
 
 // LVGL is not thread-safe. We render in a dedicated task on core 0 (away from
 // Arduino's loopTask on core 1) and protect every API call with this mutex.
@@ -672,6 +673,7 @@ static void printHelp() {
         "    save                     persist current settings to flash now\n"
         "    reset                    wipe saved settings; reboot to revert to defaults\n"
         "    sweep                    re-run the test sweep\n"
+        "    i2cwave scl|sda|both <hz> [s]  square wave on the power-board bus lines for the scope (USB only; coils verified off first)\n"
         "    pwm <0..4095>            set sweep PWM + run a sweep\n"
         "    min <0..4095>            set velocity=1 PWM floor\n"
         "    max <0..4095>            set velocity=127 PWM ceiling\n"
@@ -1175,6 +1177,21 @@ static void handleLine(char *line, ConsoleSource source) {
     } else if (!strcmp(line, "reset")) {
         settings_factory();
         Console.println("  reboot now to load factory defaults from config.h");
+    } else if (!strncmp(line, "i2cwave", 7)) {
+        // Bench signal test (include/i2c_wave.h): a square wave on the
+        // power-board bus lines for the scope. The bus is down for the whole
+        // test, so it runs only with every coil verified off and energize
+        // inhibited — the module does that — and never during an update.
+        if (ble_ota_session_active()) { Console.println("  refused — updating firmware"); return; }
+        char which[8] = "";
+        unsigned long hz = 0, secs = 5;
+        if (sscanf(line + 7, "%7s %lu %lu", which, &hz, &secs) < 2) {
+            Console.println("  usage: i2cwave scl|sda|both <hz 10..2000000> [seconds 1..30]");
+            return;
+        }
+        flushEventQueue();
+        i2c_wave_run(which, (uint32_t)hz, (uint32_t)secs, Console);
+        flushEventQueue();       // notes that arrived while the bus was down would strike now
     } else if (!strcmp(line, "sweep")) {
         testSweepAllBoards();
     } else if (!strncmp(line, "pwm ", 4)) {
