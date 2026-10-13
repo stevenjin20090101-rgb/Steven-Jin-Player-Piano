@@ -24,7 +24,7 @@ locked is what an unproven connection may do.
 - **`open`**: no key stored — the piano behaves exactly as 2.0.x. The first device to `claim` adds the first key.
 - **`claimed`**: at least one key. A connection is **untrusted** until it proves a key with `auth`.
 - **`pairing`**: claimed, and a 5-minute window is open in which another device may `claim` (adds a key).
-  Opened only by someone with access: the piano's screen (**Settings › Let a new tablet pair**), the USB
+  Opened only by someone with access: the piano's screen (**press and hold any lighting button, then tap "Let a new tablet pair"**), the USB
   console (`lock open`), or an already-trusted device (`lock pairwindow`).
 - Trust ends with the connection. Every new connection authenticates again (fresh nonce).
 - **Guest play** (Steven, 2026-10-12): a trusted device (or the USB console) can let *anyone* play notes for
@@ -131,7 +131,7 @@ nothing can take the piano back to 2.0.x over Bluetooth (USB still can, at the b
    (3 s timeout → "The piano didn't accept this tablet"). If the piano holds several keys the app needs no
    slot number.
 4. **`!lock=claimed`, no key (or `auth refused`):** read-only. Say: "This piano is locked to another device.
-   On the piano's screen open Settings › Let a new tablet pair, then reconnect."
+   On the piano's screen press and hold a lighting button, tap Let a new tablet pair, then reconnect."
 5. **Never block the stop:** the stop sequence and the crash-handler silence go out whether or not the
    connection is trusted (the piano honours them untrusted).
 6. **Update errors:** ERR 11 "not authorised", ERR 12 "not newer than the piano's firmware".
@@ -147,7 +147,7 @@ nothing can take the piano back to 2.0.x over Bluetooth (USB still can, at the b
 3. The piano restarts **open** (no key yet — nothing is locked, nothing can lock it out). The tablet
    reconnects within a minute and claims it. From then on only the tablet plays.
 4. A visit is needed only if: someone else claimed first, the tablet is replaced or reset, or another
-   device (Steven's phone) should be added — someone taps **Settings › Let a new tablet pair** on the
+   device (Steven's phone) should be added — someone presses and holds a lighting button on the piano's screen and taps **Let a new tablet pair** on the
    piano's screen, then the device connects within 5 minutes.
 
 ## As built (2026-10-12): the readings the design left open
