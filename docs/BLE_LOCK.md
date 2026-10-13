@@ -1,6 +1,10 @@
 # Locking the piano's Bluetooth to the school tablet — design and app contract
 
-**Status: design, 2026-10-12; Steven's choices the same day: automatic first claim (no visit), and a guest switch.** Requested by the app session after Steven's audit (2026-10-10):
+**Status: built 2026-10-12, not published (app 1.25 first).** Designed the same day; Steven's choices: automatic
+first claim (no visit), and a guest switch. Code: `src/ble_lock.cpp` (state, replies), `src/lock_crypto.cpp`
+(claim and auth, proven on the Mac by `tools/lock-check`), the gates in `src/ble_console.cpp` and `src/main.cpp`,
+ERR 11/12 and the version tag in `src/ota_session.cpp` (`tools/ota-sim`). "As built" below says where the code
+chose a reading the design left open. Requested by the app session after Steven's audit (2026-10-10):
 "Lock the piano's Bluetooth" — only the school tablet may play, change settings or update; updates never go
 backwards. Firmware **2.1.0**. The app side ships first (app **1.25**); the firmware is published only after
 the tablet runs it.
@@ -71,7 +75,42 @@ New facts in `dump` / `get`, after `!trips`:
 
 **Management** (trusted connection or USB): `lock pairwindow` (5-minute window for another device),
 `lock forget` (remove every key → `open`), `lock guest <minutes>` (guest play; 0 ends it). USB only:
-`lock open` (window), `lock reset` (= forget).
+`lock open` (window), `lock reset` (= forget). Also `lock status` (one line, both), and on USB
+`lock selftest` (the device's X25519 / SHA-256 / HMAC against a fixed vector, see below).
+
+### Replies (pinned with the app, 2026-10-12)
+
+Every reply line starts with two spaces except `!claim=`; the app matches these exactly.
+
+| Line sent | When | Reply |
+|---|---|---|
+| `claim <hex>` | piano `claimed` and no pairing window | `  claim refused — not open (open pairing on the piano's screen)` |
+| | already 4 keys (a 5th device; a key is never replaced silently) | `  claim refused — already 4 devices (lock forget first)` |
+| | key not 64 hex, or an all-zero shared secret | `  claim refused — bad key` |
+| | accepted | `!claim=<piano public key, 64 hex>` then `  claimed` |
+| `auth <hex>` | piano `open` (nothing checked: open trusts everyone) | `  auth ok — piano is open` |
+| | this connection is already trusted (no re-check; trust kept) | `  auth ok — already trusted` |
+| | the HMAC matches a stored key | `  auth ok` |
+| | it does not (a new nonce follows) | `  auth refused` |
+| | less than 1 s after this connection's last attempt (not checked, not counted, nonce kept) | `  auth refused — wait 1 s` |
+| | the 5th failure on this connection | `  auth refused`, then the piano disconnects it |
+| `lock pairwindow` | trusted or USB (`lock open` on USB) | `  pairing open for 5 min` |
+| `lock forget` | trusted or USB (`lock reset` on USB) | `  lock forgotten — piano is open` |
+| `lock guest N` | N = 1..240 | `  guest play on for N min` |
+| `lock guest 0` | | `  guest play off` |
+| `lock guest …` | anything else | `  lock guest out of range (0..240)` |
+| any `lock …` | from an untrusted connection (claimed piano) | `  refused — not authorised (send auth first)` |
+
+As built, a few more lines the app does not need to match (each contains `refused` or `usage:`, so the app
+already reads them as refusals): `  claim refused — could not save (try again)` and
+`  lock forget refused — could not save (try again)` (the NVS write failed; nothing changed),
+`  refused — connection closed` (a line whose connection closed while it waited; it reaches no one),
+`  refused over Bluetooth — use the USB console` (`lock open`, `lock reset`, `lock selftest` over Bluetooth),
+and the `usage:` line for an unknown `lock` word.
+
+**No unsolicited lines.** `!lock` and `!guest` change at once (the next `dump` / `get` shows them), but the
+piano sends nothing when its screen opens or a window closes, or when guest play ends — the app learns from its
+next `dump`.
 
 ## Updates never go backwards
 
@@ -108,6 +147,42 @@ nothing can take the piano back to 2.0.x over Bluetooth (USB still can, at the b
 4. A visit is needed only if: someone else claimed first, the tablet is replaced or reset, or another
    device (Steven's phone) should be added — someone taps **Settings › Let a new tablet pair** on the
    piano's screen, then the device connects within 5 minutes.
+
+## As built (2026-10-12): the readings the design left open
+
+Each is the safer of the possible readings; none changes a fact name, command word, reply text or label.
+
+- **Connections are (handle, generation).** A GAP event listener on the NimBLE host task numbers every new
+  connection (it only counts and numbers — no parsing, hashing or NVS there), and every Nordic UART write is
+  tagged with its connection's number. A handle the stack reuses for a new central therefore never inherits the
+  old connection's trust, nonce or queued lines; a line whose writer has left still runs as before on an open
+  piano, but its reply goes to no one, and a `claim` or `auth` from it is refused.
+- **Trust and nonces are per connection** (up to 3 at once, NimBLE's limit), so another central asking for
+  `dump` cannot replace the tablet's nonce under it. A nonce is made on the connection's first `dump` / `get
+  nonce`, answers one `auth` attempt (it is renewed after every attempt, a success too) and ends with the link.
+- **One claim per window.** A successful claim closes the pairing window, so each window admits exactly one
+  device (open it again for another). The first claim of an open piano also ends guest play started while it
+  was open (anyone could have switched it on then).
+- **On an open piano** everyone is trusted (`!auth=1`), `lock pairwindow` / `forget` / `guest` work for anyone
+  and nothing else changes from 2.0.x.
+- **Notes:** BLE-MIDI bytes carry no connection, so on a claimed piano notes and pedal-down play only while
+  exactly one central is connected and it is trusted, or during guest play. Program change and pitch bend are
+  gated like a NoteOn (they do nothing yet).
+- **`!auth` / `!nonce` over USB:** `!auth=1` (USB is never locked) and `!nonce=` 32 zeros.
+- **An unreadable key store locks** (claimed, no usable key) instead of opening: a claim in a pairing window
+  writes a fresh store, or `lock reset` over USB clears it. `reset` (the USB settings wipe, which clears the
+  whole NVS namespace) writes the keys back: the lock is not a setting.
+- **The screen button** "Let a new tablet pair" is in the settings popup that opens when you hold one of the
+  three lighting-mode buttons; it closes the popup so the status line shows `Pairing open • 4:59`. The status
+  line shows the pairing window (amber) or guest play (blue) after an update's and the bench signal test's
+  texts. Guest play does not keep the screen awake (it can run for hours; the AMOLED must dim).
+- **`lock selftest`** (USB) runs the claim derivation and the auth HMAC on RFC 7748 §6.1's keys (the piano is
+  Bob, the app Alice) with nonce `00 01 … 0f` and compares with the values `tools/lock-check/check.py` computes
+  on the app's side: K `44ce429a…0ee6dab9`, auth `e25c89e2…2afa2036`.
+- **ERR 12 rules:** versions compare as MAJOR.MINOR.PATCH numbers, a `-…` or `+…` suffix ignored, so equal
+  (including `2.1.0-rc.1` against `2.1.0`) is not newer; anything that does not parse is not newer. In the
+  image, the first well-formed tag (1..16 characters of `0-9 A-Z a-z . + -`, NUL-ended) counts. The firmware
+  holds the 6 marker bytes exactly once — the tag itself (the scanner stores them shifted by one).
 
 ## Residual risks, stated
 

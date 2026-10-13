@@ -129,6 +129,11 @@ Read-only facts are prefixed `!`. Exact list and order:
 !rssi=<dBm>                         (the link's signal as the piano hears it; empty with no central connected)
 !active=<n>                         (solenoid channels believed energized now)
 !trips=<n>                          (hold-watchdog releases since boot)
+!lockproto=1                        (the Bluetooth lock is present, docs/BLE_LOCK.md, from 2.1.0)
+!lock=open|claimed|pairing
+!auth=0|1                           (the connection that asked has proved a key; 1 on an open piano and over USB)
+!nonce=<32 hex>                     (the asking connection's 16-byte nonce; 32 zeros over USB)
+!guest=<seconds left>               (guest play; 0 = off)
 leds=0|1
 ledmode=0..3
 ledbright=0..255
@@ -186,6 +191,15 @@ repeat after a lone note can additionally wait up to `isostrike − minstrike`.
 The diagnostics facts from `!temp` to `!trips` (added 2026-10-08 for 2.0.1, docs/BLE_DIAG.md) are compatible
 additions of the same kind: read-only, computed when asked, listed after `!repeatms`. Two values can be empty
 (`!temp` when the sensor gives nothing, `!rssi` with no central connected); a client shows an empty row.
+
+The lock facts from `!lockproto` to `!guest` (added 2026-10-12 for 2.1.0, docs/BLE_LOCK.md) follow `!trips`.
+`!auth` and `!nonce` belong to the connection that asked: the Bluetooth console tells the lock which
+connection it is serving while it runs the line. The nonce is made on that connection's first ask and renewed
+after every `auth` attempt; over USB `!auth=1` and the nonce reads 32 zeros. All five are readable by an
+untrusted connection (`dump` and `get` stay open on a claimed piano), and change at once. From 2.1.0 the
+console also hands `claim`, `auth` and `lock …` to the lock before the allow-list of §5, and on a claimed
+piano an untrusted connection may run only `dump`, `get`, `status`, `help`, `off` and `broadcast`
+(`  refused — not authorised (send auth first)` for anything else).
 
 **`get <name>`** prints the single `name=value` line for any name in the list above
 (including the `!` facts), or `  unknown setting` for anything else. The name may be given

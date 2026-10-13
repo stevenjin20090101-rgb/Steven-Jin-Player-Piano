@@ -155,7 +155,8 @@ return, the outbox of notifications that could not be sent yet — is `ota::Sess
 (`include/ota_session.h`, `src/ota_session.cpp`), which includes no Arduino, NimBLE or ESP
 header and reaches the device only through an `ota::Port` (clock, link, notify, safety hooks,
 flash, SHA-256, signature, restart). `tools/ota-sim` compiles it on the Mac against a fake port
-and replays §5's worked example and every row of the error table (`make check`, 53 scenarios).
+and replays §5's worked example and every row of the error table (`make check`, 53 scenarios; 60 from 2.1.0
+with ERR 11/12, the version tag split across frames, a decoy and the tagged worked example).
 `src/ble_ota.cpp` is only the glue: the queues and the `Port`. Per pass, in this order:
 `session.tick()`; **at most one Control frame** (so BEGIN's early Ed25519 check runs at most
 once a pass; its time is logged: `[ota] signature checked at BEGIN in N ms`); Data frames until
@@ -219,6 +220,21 @@ READY, modulo 65,536; the payloads concatenate to the image.
 | 8 | image invalid | `UPDATE_ERROR_MAGIC_BYTE` (first byte ≠ 0xE9) or `UPDATE_ERROR_ACTIVATE` (`esp_ota_set_boot_partition()` refused the image) |
 | 9 | timeout | no valid frame from the owner for 10 s in RECEIVING |
 | 10 | refused by safety | crash-loop safe mode is active this boot (§7) |
+| 11 | not authorised | the piano is claimed (docs/BLE_LOCK.md) and this connection has not proved a key with `auth` — from 2.1.0 |
+| 12 | not newer | BEGIN's `version`, or after END the version tag inside the signed image (missing, or not newer), is not newer than the running `FW_VERSION` — from 2.1.0 |
+
+**The version tag (2.1.0).** BEGIN's `version` is not signed, so updates are kept from going backwards by a
+tag inside the signed bytes: every image from 2.1.0 holds the string `SJPV1:` followed by its `FW_VERSION` and
+a NUL (`g_fw_version_tag` in `src/fw_info.cpp`). The session scans the Data stream for it as the bytes arrive
+(a tag split across frames is found the same) and, after the hash and the signature pass, refuses an image
+whose tag is missing or not newer with ERR 12 before the boot slot is touched. Versions compare as
+MAJOR.MINOR.PATCH numbers (a `-…` / `+…` suffix ignored; equal is not newer; anything unparseable is not newer).
+BEGIN is also refused with ERR 12 at once when its own `version` is not newer, so an honest app finds out in a
+second. Releases before 2.1.0 carry no tag: nothing takes a 2.1.0 piano back to 2.0.x over Bluetooth (USB still
+can, at the bench). The worked example below predates the tag: its frames are unchanged, and a 2.1.0 piano
+(or `tools/ota-sim`'s fake on 2.0.2) answers its END with `82` then `E1 0C` — the hash and the signature pass,
+the tag is missing (`worked_example`); the same flow with a tagged image of the same size ends in `83 DC 05`
+(`worked_example_tagged`).
 
 **Worked example**, reproducible for tests: an image of 991,232 bytes (0x000F2000 → `00 20 0F 00`),
 `byte[i] = (0xE9 + 7·i) & 0xFF`, version `2.1.0`, window 16, MTU 255, signed with the **RFC 8032
@@ -257,7 +273,7 @@ connection whose BEGIN was accepted — is heard; frames from other connections 
 | IDLE | boot; every abort or error | a valid BEGIN → PREPARING |
 | PREPARING | BEGIN passed checks 1–5 below | READY → RECEIVING; ERR 1/2/7; ABORT; owner gone |
 | RECEIVING | READY sent | END with all bytes → VERIFYING; ABORT; ERR 4/7/8/9; owner gone |
-| VERIFYING | VERIFYING sent | OK → REBOOTING; ERR 5/6/7/8 |
+| VERIFYING | VERIFYING sent | OK → REBOOTING; ERR 5/6/12/7/8 |
 | REBOOTING | OK sent | `ESP.restart()` |
 
 Every return to IDLE: `Update.abort()` (frees the buffer, erases nothing; called only while an
@@ -273,7 +289,9 @@ ignored and a lost link no longer aborts; after OK the piano restarts with or wi
 **BEGIN**, in order — checks that touch no hardware come first, so a refused BEGIN never
 interrupts music: (1) a session is active → ERR 3 to the owner (others: ignored); the running
 image is PENDING_VERIFY → ERR 3. (2) Not 118 bytes, `size` 0, `window` ∉ 1–32, bad `version` →
-ERR 4. (3) Crash safe mode → ERR 10. (4) `size` > slot → ERR 2. (5)
+ERR 4. (2a, from 2.1.0) The piano is claimed and this connection has not proved a key → ERR 11. (3) Crash safe
+mode → ERR 10. (3a, from 2.1.0) `version` not newer than the running `FW_VERSION` → ERR 12. (4) `size` > slot →
+ERR 2. (5)
 `crypto_sign_verify_detached(sig, sha256, 32, kOtaPublicKey) != 0` → ERR 6 — the early check,
 so a wrong key costs a second, not a minute of transfer. (6) PREPARING and the safety sequence
 of §7; failure → ERR 1. (7) `Update.begin(size, U_FLASH)` false: `UPDATE_ERROR_SIZE` → ERR 2,
@@ -288,14 +306,14 @@ next pass, so the notification leaves first.
 App                              NimBLE task (core 0)       loop() (core 1)
 MTU 517→255 · priority HIGH · subscribe Control · MIDI CC64=0, CC123 ─► all-off path
 … ≥ 500 ms …
-Control BEGIN ────────────────► queue ─────────────────────► checks 3/4/10/2/6 → PREPARING: notes
+Control BEGIN ────────────────► queue ─────────────────────► checks 3/4/11/10/12/2/6 → PREPARING: notes
                                                              blocked, LEDs dark, allKeysOff, pedal up,
                                                              verified OFF ≤ 1 s, quiet, Update.begin
 ◄────────────────────────────────────────────────────────── READY 81 FA 00 10
 Data seq 0…15 ────────────────► queue ─────────────────────► SHA-256 + Update.write, ≤ 4 KB per pass
 ◄────────────────────────────────────────────────────────── ACK 85 A0 0F 00 00 (… 247 windows + 13 frames)
 ◄────────────────────────────────────────────────────────── ACK 85 00 20 0F 00
-Control END ──────────────────► queue ─────────────────────► VERIFYING 82 · digest, Ed25519, Update.end
+Control END ──────────────────► queue ─────────────────────► VERIFYING 82 · digest, Ed25519, tag, Update.end
 ◄────────────────────────────────────────────────────────── OK 83 DC 05 · settings_save, otaPart/otaVer
 link drops at 1.5 s ◄────────────────────────────────────── disconnect, ESP.restart()
                                  bootloader: app1 NEW → PENDING_VERIFY, boots it
@@ -376,6 +394,8 @@ mbedtls_sha256_finish_ret(&s_sha, digest);
 if (memcmp(digest, s_hdr.sha256, 32) != 0) return fail(5);
 if (crypto_sign_verify_detached(s_hdr.sig, digest, 32, kOtaPublicKey) != 0)  // <sodium.h>; call
     return fail(6);                                                           // sodium_init() once
+if (!tag.found() || !versionNewer(tag.version(), FW_VERSION))                 // from 2.1.0: the signed
+    return fail(12);                                                          // version tag (§5)
 esp_task_wdt_reset();
 if (!Update.end(false)) {    // only now: refuses unless all `size` bytes were written, writes the
     uint8_t e = Update.getError();   // 16 held-back bytes, re-reads the magic (UPDATE_ERROR_READ),
@@ -403,8 +423,9 @@ static const uint8_t kOtaPublicKey[32] = {
 };
 ```
 
-**What the signature does not stop:** a genuine older release installs (no anti-rollback; the
-app offers only newer ones); anyone in range can connect, as with BLE-MIDI today, and replaying a
+**What the signature does not stop:** before 2.1.0, a genuine older release installed (no anti-rollback;
+the app offers only newer ones) — from 2.1.0 the signed version tag refuses it (ERR 12, §5) and, on a claimed
+piano, only a connection that proved a key may begin (ERR 11, docs/BLE_LOCK.md); anyone in range can connect, as with BLE-MIDI today, and replaying a
 published BEGIN can stop the music once — no worse than CC 123 on the open MIDI service.
 
 ## 9. Rollback and the self-test

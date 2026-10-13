@@ -96,6 +96,10 @@ never ignore those return values.
    console commands are the polite layer; the inhibit is the guarantee, and
    `tools/dispatch-sim` proves it.
 
+**The Bluetooth lock never gates a release** (2.1.0, `docs/BLE_LOCK.md`): NoteOff, CC 120/121/123,
+CC64 below 64, `off`, `broadcast`, the disconnect stop and the hold watchdog work for every connection,
+trusted or not; the lock only drops NoteOns, pedal-down and commands that change or drive something.
+
 ## Why Full-Power mode is the installation default
 
 PWM velocity mode switches every active coil at the PCA9685 carrier
