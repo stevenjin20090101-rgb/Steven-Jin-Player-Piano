@@ -110,15 +110,24 @@ def main(binary):
             expect(run(binary, "match", os.urandom(16).hex(), mac.hex(), *keys) == "nomatch", f"auth {i}: another nonce is refused")
     expect(run(binary, "match", SELFTEST_NONCE.hex(), "00" * 32) == "nomatch", "no keys: nothing matches")
 
-    # Small-order app keys: an all-zero shared secret, refused with zeroed outputs.
+    # Small-order app keys: an all-zero shared secret, refused with zeroed outputs —
+    # and recognised by the list before any X25519 runs (with the top bit set too).
     for p in SMALL_ORDER:
         expect(run(binary, "claim", os.urandom(32).hex(), p) == "refused", f"small-order app key {p[:16]}…: refused")
+        high = bytearray(bytes.fromhex(p))
+        high[31] |= 0x80
+        expect(run(binary, "smallorder", p) == "yes", f"small-order list holds {p[:16]}…")
+        expect(run(binary, "smallorder", bytes(high).hex()) == "yes", f"small-order list holds {p[:16]}… with the top bit set")
+        expect(run(binary, "claim", os.urandom(32).hex(), bytes(high).hex()) == "refused", f"{p[:16]}… with the top bit: refused")
         try:
             X25519PrivateKey.generate().exchange(X25519PublicKey.from_public_bytes(bytes.fromhex(p)))
             python_refuses = False
         except Exception:
             python_refuses = True
         expect(python_refuses, f"(Python refuses {p[:16]}… too)")
+    for _ in range(50):
+        expect(run(binary, "smallorder", pub_of(os.urandom(32)).hex()) == "no", "a real public key is not small-order")
+    expect(run(binary, "smallorder", ALICE_PK.hex()) == "no", "RFC 7748's Alice is not small-order")
 
     # Strict hex: exactly 2n digits, either case.
     expect(run(binary, "fromhex", "ab" * 32, "32") == "ok=" + "ab" * 32, "64 hex digits: ok")
@@ -142,7 +151,7 @@ def main(binary):
         print(f"LOCK CHECK: FAILED ({len(FAILS)} checks)")
         return 1
     print(f"LOCK CHECK: OK — RFC 7748 claim, {n_claims} random claims + auths, 40 x 3 match cases, "
-          f"{len(SMALL_ORDER)} small-order keys refused, strict hex")
+          f"{len(SMALL_ORDER)} small-order keys (x2 top bit) listed and refused, strict hex")
     return 0
 
 

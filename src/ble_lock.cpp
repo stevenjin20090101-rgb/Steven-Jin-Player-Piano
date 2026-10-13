@@ -28,6 +28,7 @@ const char    *kNvsKeys      = "lockKeys";   // count byte, then count x 32 byte
 const uint8_t  kMaxKeys      = 4;
 const uint32_t kWindowMs     = 5UL * 60UL * 1000UL;
 const uint32_t kAuthGapMs    = 1000;         // at most one auth attempt a second per connection
+const uint32_t kClaimGapMs   = 1000;         // at most one claim's X25519 work a second, from anyone
 const uint8_t  kMaxFailures  = 5;            // then the piano drops the connection
 const uint32_t kDropDelayMs  = 300;          // ... once the last "  auth refused" has gone out
 const uint32_t kDropRetryMs  = 1000;
@@ -118,6 +119,8 @@ bool     s_windowOpen  = false;
 uint32_t s_windowUntil = 0;
 bool     s_guestOn     = false;
 uint32_t s_guestUntil  = 0;
+bool     s_claimTried  = false;
+uint32_t s_lastClaimMs = 0;
 
 // One per connection that asked for a nonce, tried auth or claimed.
 struct Peer {
@@ -324,8 +327,8 @@ void claimLine(uint16_t conn, uint16_t gen, const char *arg) {
         return;
     }
     uint8_t appPublic[32];
-    if (!lockcrypto::fromHex(arg, appPublic, sizeof appPublic)) {
-        Console.println("  claim refused — bad key");
+    if (!lockcrypto::fromHex(arg, appPublic, sizeof appPublic) || lockcrypto::isSmallOrder(appPublic)) {
+        Console.println("  claim refused — bad key");    // a small-order key costs no X25519 time
         return;
     }
     const uint8_t have = s_unreadable ? 0 : s_keyCount;   // an unreadable store is replaced
@@ -333,6 +336,15 @@ void claimLine(uint16_t conn, uint16_t gen, const char *arg) {
         Console.println("  claim refused — already 4 devices (lock forget first)");
         return;
     }
+    // Two X25519 run on the loop task: at most one claim's worth a second,
+    // whoever asks, so no stream of claims can hold back the safety ticks
+    // (SAFETY.md rule 6). A real claim succeeds the first time.
+    if (s_claimTried && (uint32_t)(now - s_lastClaimMs) < kClaimGapMs) {
+        Console.println("  claim refused — wait 1 s");
+        return;
+    }
+    s_claimTried  = true;
+    s_lastClaimMs = now;
     const uint32_t t0 = millis();
     uint8_t secret[32], pianoPublic[32], key[32];
     randombytes_buf(secret, sizeof secret);               // a fresh piano key pair per claim

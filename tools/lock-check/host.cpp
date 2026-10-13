@@ -14,7 +14,8 @@
 //   lockcheck claim <piano secret> <app public>    pianoPublic=… and key=…, or "refused"
 //   lockcheck mac <key> <nonce>                    mac=…
 //   lockcheck match <nonce> <mac> [key …]          "match" or "nomatch"
-//   lockcheck fromhex <text> <bytes>               "ok <hex>" or "bad"
+//   lockcheck fromhex <text> <bytes>               "ok=<hex>" or "bad"
+//   lockcheck smallorder <public key>              "yes" or "no"
 #include "lock_crypto.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,6 +74,12 @@ int main(int argc, char **argv) {
         else printf("bad\n");
         return 0;
     }
-    fprintf(stderr, "usage: lockcheck claim|mac|match|fromhex …\n");
+    if (argc == 3 && !strcmp(argv[1], "smallorder")) {
+        uint8_t pub[32];
+        if (!arg(argv[2], pub, 32)) return 2;
+        printf("%s\n", lockcrypto::isSmallOrder(pub) ? "yes" : "no");
+        return 0;
+    }
+    fprintf(stderr, "usage: lockcheck claim|mac|match|fromhex|smallorder …\n");
     return 2;
 }

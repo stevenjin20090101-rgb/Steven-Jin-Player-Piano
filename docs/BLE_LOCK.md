@@ -102,7 +102,9 @@ Every reply line starts with two spaces except `!claim=`; the app matches these 
 | any `lock …` | from an untrusted connection (claimed piano) | `  refused — not authorised (send auth first)` |
 
 As built, a few more lines the app does not need to match (each contains `refused` or `usage:`, so the app
-already reads them as refusals): `  claim refused — could not save (try again)` and
+already reads them as refusals): `  claim refused — wait 1 s` (a claim's X25519 work runs on the loop task,
+so the piano does at most one a second, from anyone — SAFETY.md rule 6; a small-order key is refused as
+`bad key` before any of it), `  claim refused — could not save (try again)` and
 `  lock forget refused — could not save (try again)` (the NVS write failed; nothing changed),
 `  refused — connection closed` (a line whose connection closed while it waited; it reaches no one),
 `  refused over Bluetooth — use the USB console` (`lock open`, `lock reset`, `lock selftest` over Bluetooth),

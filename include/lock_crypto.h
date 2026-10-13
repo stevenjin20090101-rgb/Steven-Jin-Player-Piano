@@ -26,9 +26,15 @@ static const size_t kKeyBytes   = 32;   // K, and every X25519 key
 static const size_t kNonceBytes = 16;
 static const size_t kMacBytes   = 32;
 
+// True for the X25519 public keys whose shared secret is all zero whatever
+// the secret: libsodium's list of small-order points (0, 1, the two of order
+// 8, p - 1, p, p + 1), the top bit ignored as X25519 ignores it. Constant
+// time. Lets the piano refuse such a key before spending any X25519 time.
+bool isSmallOrder(const uint8_t publicKey[32]);
+
 // The piano's side of a claim. `pianoSecret` is 32 fresh random bytes (X25519
 // clamps them). Writes the piano's public key and K. False — and both outputs
-// zeroed — when the shared secret is all zero (a small-order app key).
+// zeroed — when the app key is small-order or the shared secret is all zero.
 bool claimDerive(const uint8_t pianoSecret[32], const uint8_t appPublic[32],
                  uint8_t pianoPublic[32], uint8_t key[32]);
 
