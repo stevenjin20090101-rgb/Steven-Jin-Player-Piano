@@ -16,6 +16,10 @@ void ui_refresh_status();
 // (docs/BLE_OTA.md sections 7 and 9). ui_refresh_status() puts the BLE state
 // back. Like every ui_* call: inside loop()'s ui_lock block only.
 void ui_set_status_text(const char *text, uint32_t rgb);
+// The settings popup's "Let a new tablet pair" was tapped since the last call
+// (docs/BLE_LOCK.md). Loop task, outside ui_lock: the LVGL callback only
+// raises a flag; loop() opens the Bluetooth lock's pairing window.
+bool ui_take_pair_request();
 void ui_refresh_note(uint8_t note, uint8_t velocity);
 void ui_set_key(uint8_t note, bool pressed);
 void ui_set_i2c_info(int count, const uint8_t *addrs);

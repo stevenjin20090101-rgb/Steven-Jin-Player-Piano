@@ -278,6 +278,16 @@ static void cfg_close_cb(lv_event_t *e) {
     lv_obj_add_flag(cfg_popup, LV_OBJ_FLAG_HIDDEN);
 }
 
+// "Let a new tablet pair" (docs/BLE_LOCK.md): a flag for loop(), which opens
+// the Bluetooth lock's 5-minute pairing window — no lock logic on the LVGL
+// task. The popup closes so the status line ("Pairing open • 4:59") shows.
+static volatile bool s_pairRequest = false;
+
+static void cfg_pair_cb(lv_event_t *e) {
+    s_pairRequest = true;
+    lv_obj_add_flag(cfg_popup, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void cfg_speed_slider_cb(lv_event_t *e) {
     int v = lv_slider_get_value(lv_event_get_target(e));
     if (appState.ledMode == LED_MODE_RAINBOW) {
@@ -762,6 +772,24 @@ static void build_cfg_popup() {
     lv_label_set_text(hint, "Tap X to close");
     lv_obj_set_style_text_color(hint, lv_color_hex(0x707080), LV_PART_MAIN);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+    // Bluetooth lock: let one more device claim the piano for 5 minutes
+    // (always shown, whatever the mode). Bottom right, beside the hint.
+    lv_obj_t *pair_btn = lv_obj_create(cfg_popup);
+    lv_obj_set_size(pair_btn, 236, 44);
+    lv_obj_align(pair_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 6);
+    lv_obj_set_style_radius(pair_btn, 22, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(pair_btn, lv_color_hex(0x303038), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(pair_btn, lv_color_hex(0x404050), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(pair_btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(pair_btn, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(pair_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(pair_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(pair_btn, cfg_pair_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *pair_lbl = lv_label_create(pair_btn);
+    lv_label_set_text(pair_lbl, LV_SYMBOL_BLUETOOTH "  Let a new tablet pair");
+    lv_obj_set_style_text_color(pair_lbl, lv_color_white(), LV_PART_MAIN);
+    lv_obj_center(pair_lbl);
 }
 
 static void build_control_panel() {
@@ -969,6 +997,12 @@ void ui_refresh_status() {
         lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xFFB060), LV_PART_MAIN);
         lv_label_set_text_fmt(lbl_peer, "Pair with \"%s\"", BLE_MIDI_DEVICE_NAME);
     }
+}
+
+bool ui_take_pair_request() {
+    if (!s_pairRequest) return false;
+    s_pairRequest = false;
+    return true;
 }
 
 void ui_set_status_text(const char *text, uint32_t rgb) {

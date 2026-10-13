@@ -7,6 +7,7 @@
 //  Authorship provenance (Ed25519 fingerprint): eab16a502f679465  - see PROVENANCE.md
 // ============================================================================
 #include "ble_console.h"
+#include "ble_lock.h"
 #include "console_out.h"
 
 #include <NimBLEDevice.h>
@@ -34,10 +35,13 @@ static NimBLECharacteristic *s_txChr = nullptr;
 static uint16_t s_txHandle = 0;                  // set by ble_console_check()
 
 // ---- RX: host task -> loop --------------------------------------------------
-// Each write goes into the stream buffer as one frame: a 4-byte header
-// (connection handle, payload length; little-endian) and the payload. Only
-// the host task writes and only the loop reads, and a write goes in whole or
-// not at all, so frames never tear.
+// Each write goes into the stream buffer as one frame: a 6-byte header
+// (connection handle, payload length, connection generation; little-endian)
+// and the payload. The generation (ble_lock.h) tells a connection apart from
+// a later one the stack gives the same handle, so a line that waited while
+// its writer left is never taken as the newcomer's. Only the host task writes
+// and only the loop reads, and a write goes in whole or not at all, so frames
+// never tear.
 static StreamBufferHandle_t s_rxStream = nullptr;
 static volatile uint32_t    s_rxDropped = 0;     // bytes lost to a full buffer (host task)
 static uint32_t             s_rxCut     = 0;     // bytes of half lines dropped (loop)
@@ -54,8 +58,10 @@ public:
         size_t n = value.size();
         if (n == 0) return;
         uint16_t conn = desc->conn_handle;
-        uint8_t hdr[4] = { (uint8_t)(conn & 0xFF), (uint8_t)(conn >> 8),
-                           (uint8_t)(n & 0xFF),    (uint8_t)(n >> 8) };
+        uint16_t gen  = ble_lock_conn_gen(conn);      // a spinlocked read, nothing more
+        uint8_t hdr[6] = { (uint8_t)(conn & 0xFF), (uint8_t)(conn >> 8),
+                           (uint8_t)(n & 0xFF),    (uint8_t)(n >> 8),
+                           (uint8_t)(gen & 0xFF),  (uint8_t)(gen >> 8) };
         if (xStreamBufferSpacesAvailable(s_rxStream) < sizeof(hdr) + n) {
             s_rxDropped += n;                       // zero wait: drop, never block
             return;
@@ -189,6 +195,7 @@ bool ble_console_allowed(const char *line) {
 // ---- Line assembly (loop task) ----------------------------------------------
 // Its own 80-byte line buffer, never the serial reader's.
 static uint16_t s_frameConn = BLE_HS_CONN_HANDLE_NONE;  // writer of the staged bytes
+static uint16_t s_frameGen  = 0;                        // ... and its connection generation
 static uint16_t s_frameLeft = 0;                        // payload still in the stream
 static uint8_t  s_stage[64];
 static uint8_t  s_stageLen = 0, s_stagePos = 0;
@@ -196,17 +203,19 @@ static uint8_t  s_stageLen = 0, s_stagePos = 0;
 static char     s_rxLine[80];
 static uint8_t  s_rxLineLen  = 0;
 static uint16_t s_rxLineConn = BLE_HS_CONN_HANDLE_NONE;   // who the half line is from
+static uint16_t s_rxLineGen  = 0;
 
-// The next received byte and the connection that wrote it; false when nothing
-// is waiting.
-static bool nextByte(uint8_t &c, uint16_t &conn) {
+// The next received byte and the connection (handle, generation) that wrote
+// it; false when nothing is waiting.
+static bool nextByte(uint8_t &c, uint16_t &conn, uint16_t &gen) {
     if (s_stagePos >= s_stageLen) {
         if (s_frameLeft == 0) {
-            uint8_t hdr[4];
+            uint8_t hdr[6];
             if (xStreamBufferBytesAvailable(s_rxStream) < sizeof(hdr)) return false;
             xStreamBufferReceive(s_rxStream, hdr, sizeof(hdr), 0);
             s_frameConn = (uint16_t)(hdr[0] | (hdr[1] << 8));
             s_frameLeft = (uint16_t)(hdr[2] | (hdr[3] << 8));
+            s_frameGen  = (uint16_t)(hdr[4] | (hdr[5] << 8));
         }
         size_t want = (s_frameLeft < sizeof(s_stage)) ? s_frameLeft : sizeof(s_stage);
         size_t got = want ? xStreamBufferReceive(s_rxStream, s_stage, want, 0) : 0;
@@ -217,6 +226,7 @@ static bool nextByte(uint8_t &c, uint16_t &conn) {
     }
     c = s_stage[s_stagePos++];
     conn = s_frameConn;
+    gen  = s_frameGen;
     return true;
 }
 
@@ -224,20 +234,22 @@ static bool nextByte(uint8_t &c, uint16_t &conn) {
 // Ends on "\n" or "\r"; empty lines are skipped; a line longer than the buffer
 // keeps its first 79 characters (as on USB). A half line is dropped when bytes
 // from another connection arrive: a line comes from one writer.
-static bool nextLine(uint16_t &conn) {
+static bool nextLine(uint16_t &conn, uint16_t &gen) {
     uint8_t  c;
-    uint16_t from;
-    while (nextByte(c, from)) {
-        if (from != s_rxLineConn) {
+    uint16_t from, fromGen;
+    while (nextByte(c, from, fromGen)) {
+        if (from != s_rxLineConn || fromGen != s_rxLineGen) {
             s_rxCut += s_rxLineLen;
             s_rxLineLen = 0;
             s_rxLineConn = from;
+            s_rxLineGen  = fromGen;
         }
         if (c == '\n' || c == '\r') {
             if (s_rxLineLen > 0) {
                 s_rxLine[s_rxLineLen] = 0;
                 s_rxLineLen = 0;
                 conn = s_rxLineConn;
+                gen  = s_rxLineGen;
                 return true;
             }
         } else if (s_rxLineLen < sizeof(s_rxLine) - 1) {
@@ -256,22 +268,28 @@ static uint32_t s_txSince = 0;
 // While one waits, nextLine() is not called, so s_rxLine stays intact.
 static bool     s_rxLineHeld = false;
 static uint16_t s_rxHeldConn = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t s_rxHeldGen  = 0;
 
 int ble_console_poll(ConsoleLineHandler handle) {
     if (s_rxStream == nullptr) return 0;
     int handled = 0;
     while (handled < kMaxLinesPerPass) {
         if (!s_rxLineHeld) {
-            uint16_t conn;
-            if (!nextLine(conn)) break;
+            uint16_t conn, gen;
+            if (!nextLine(conn, gen)) break;
             size_t len = strlen(s_rxLine);            // trim like handleLine does
             while (len > 0 && s_rxLine[len - 1] == ' ') s_rxLine[--len] = 0;
             if (len == 0) continue;
             s_rxLineHeld = true;
             s_rxHeldConn = conn;
+            s_rxHeldGen  = gen;
         }
         uint16_t conn  = s_rxHeldConn;
-        uint32_t since = subscribedSince(conn);
+        uint16_t gen   = s_rxHeldGen;
+        // A line whose writer has left (the handle may already be someone
+        // else's): it still runs as before, but its reply goes to no one.
+        const bool live = gen != 0 && ble_lock_conn_gen(conn) == gen;
+        uint32_t since = live ? subscribedSince(conn) : 0;
 
         // Replies go to the asker, and only while it listens on TX. The ring
         // holds one asker's reply at a time: a line from someone else waits
@@ -294,12 +312,25 @@ int ble_console_poll(ConsoleLineHandler handle) {
         // nothing else runs this pass.
         bool endsPass = commandIs(s_rxLine, "testmin") || commandIs(s_rxLine, "testmax") ||
                         commandIs(s_rxLine, "panic");
-        if (ble_console_allowed(s_rxLine)) {
+
+        // The Bluetooth lock (docs/BLE_LOCK.md) first: claim / auth / lock
+        // are its own; on a claimed piano an unproven connection may only
+        // read (dump, get, status, help) and stop (off, broadcast). Releasing
+        // over BLE-MIDI is never gated (main.cpp). Then the allow-list.
+        ble_lock_set_asker(conn, gen);
+        if (ble_lock_is_lock_command(s_rxLine)) {
+            Console.printf("> %s\n", s_rxLine);
+            ble_lock_handle_ble(conn, gen, s_rxLine);
+        } else if (!ble_lock_trusted(conn, gen) && !ble_lock_untrusted_allowed(s_rxLine)) {
+            Console.printf("> %s\n", s_rxLine);
+            Console.println(BLE_LOCK_REFUSAL);
+        } else if (ble_console_allowed(s_rxLine)) {
             handle(s_rxLine, SRC_BLE);
         } else {
             Console.printf("> %s\n", s_rxLine);
             Console.println(BLE_REFUSAL);
         }
+        ble_lock_clear_asker();
         Console.setMirror(false);
         if (endsPass) break;
     }

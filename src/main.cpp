@@ -41,6 +41,7 @@
 #include "console_out.h"
 #include "ble_console.h"
 #include "ble_ota.h"
+#include "ble_lock.h"
 #include "i2c_wave.h"
 
 // LVGL is not thread-safe. We render in a dedicated task on core 0 (away from
@@ -342,6 +343,11 @@ void note_input_enqueue(uint8_t on, uint8_t note, uint8_t velocity, bool from_bl
     if (i2c_wave_active()) return;
     // The disconnect stop is discarding what the lost source left behind.
     if (from_ble && s_discardBleNotes) return;
+    // The Bluetooth lock (docs/BLE_LOCK.md): on a claimed piano a NoteOn from
+    // Bluetooth plays only for a trusted tablet or during guest play. A
+    // NoteOff always passes — releasing is never locked. Touch keys are not
+    // Bluetooth. (from_ble notes come from MIDI.read(), on the loop task.)
+    if (from_ble && on && !ble_lock_notes_allowed()) return;
     if (from_ble && appState.inputMode == INPUT_MODE_TOUCH_ONLY) return;
     if (!from_ble && appState.inputMode == INPUT_MODE_BLE_ONLY) return;
     enqueueEvent(on, note, velocity);
@@ -411,6 +417,13 @@ static void handleControlChange(byte channel, byte cc, byte value) {
 #if DEBUG_MIDI_PRINT
     Serial.printf("[midi] CC      ch=%u cc=%u val=%u\n", channel, cc, value);
 #endif
+    // The Bluetooth lock (docs/BLE_LOCK.md): releasing is never locked — the
+    // all-off CCs 120/121/123 and the pedal going up (CC64 below 64) pass for
+    // every connection. Everything else (pedal down, CC66/67, …) needs a
+    // trusted tablet or guest play on a claimed piano.
+    const bool releasing = cc == 120 || cc == 121 || cc == 123 || (cc == 64 && value < 64);
+    if (!releasing && !ble_lock_notes_allowed()) return;
+
     // Honor the standard "stop everything" control changes an app/DAW sends
     // when you hit stop/panic: CC120 All-Sound-Off, CC123 All-Notes-Off,
     // CC121 Reset-All-Controllers. Release immediately instead of waiting
@@ -442,12 +455,14 @@ static void handleControlChange(byte channel, byte cc, byte value) {
 }
 
 static void handleProgramChange(byte channel, byte program) {
+    if (!ble_lock_notes_allowed()) return;   // the lock: like a NoteOn (it does nothing yet anyway)
 #if DEBUG_MIDI_PRINT
     Serial.printf("[midi] PC      ch=%u prog=%u\n", channel, program);
 #endif
 }
 
 static void handlePitchBend(byte channel, int bend) {
+    if (!ble_lock_notes_allowed()) return;   // the lock: like a NoteOn (it does nothing yet anyway)
 #if DEBUG_MIDI_PRINT
     Serial.printf("[midi] Bend    ch=%u value=%d\n", channel, bend);
 #endif
@@ -674,7 +689,12 @@ static void printHelp() {
         "    snappy                   lowest-latency preset (leds off, no deferral, no humanize) + save\n"
         "    cinematic                soft/expressive preset (velocity dynamics + soft release) + save\n"
         "    save                     persist current settings to flash now\n"
-        "    reset                    wipe saved settings; reboot to revert to defaults\n"
+        "    reset                    wipe saved settings; reboot to revert to defaults (keeps the Bluetooth lock)\n"
+        "    lock status              Bluetooth lock: open/claimed, pairing window, guest play, connections\n"
+        "    lock open                let one more device claim for 5 min (= the screen's Let a new tablet pair)\n"
+        "    lock reset               forget every device key: the piano is open (= lock forget)\n"
+        "    lock guest <0..240>      let anyone play notes for N minutes (0 ends it)\n"
+        "    lock selftest            check the lock's X25519 / SHA-256 / HMAC against fixed vectors\n"
         "    sweep                    re-run the test sweep\n"
         "    i2cwave scl|sda|both <hz> [s]  square wave on the power-board bus lines for the scope (USB only; coils verified off first)\n"
         "    i2cwave bus [s]          real I2C probes to every power board for the scope (clock + ACK; USB only)\n"
@@ -747,6 +767,7 @@ static void printStatus() {
                    (unsigned)uxTaskGetStackHighWaterMark(NULL),
                    (unsigned)getArduinoLoopTaskStackSize());
     ble_console_print_status(Console);
+    ble_lock_print_status(Console);
     i2c_wave_print_status(Console);
     Console.printf("  PWM settings: sweep=%u  min=%u  max=%u  hold=%lu ms  velmult=%.2f\n",
                    g_sweepStrikePWM, g_minStrikePWM, g_maxStrikePWM,
@@ -989,6 +1010,13 @@ static const SettingRow kSettingRows[] = {
     { "rssi",      true, rssiValue },
     FACT_ROW("active",     "%d",  coilsEnergizedCount()),
     FACT_ROW("trips",      "%lu", (unsigned long)watchdogTrips()),
+    // The Bluetooth lock (docs/BLE_LOCK.md, 2.1.0). !auth and !nonce are the
+    // asking connection's; over USB !auth=1 and the nonce reads 32 zeros.
+    FACT_ROW("lockproto",  "%d",  1),
+    FACT_ROW("lock",       "%s",  ble_lock_state_word()),
+    FACT_ROW("auth",       "%d",  ble_lock_asker_trusted() ? 1 : 0),
+    { "nonce",     true, ble_lock_nonce_hex },
+    FACT_ROW("guest",      "%lu", (unsigned long)ble_lock_guest_seconds()),
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
@@ -1095,6 +1123,12 @@ static void handleLine(char *line, ConsoleSource source) {
         Console.println(BLE_REFUSAL);
         return;
     }
+    // The same for the Bluetooth lock: the console checked trust before the
+    // call (and set the asker); checked again so no caller can skip it.
+    if (source == SRC_BLE && !ble_lock_asker_trusted() && !ble_lock_untrusted_allowed(line)) {
+        Console.println(BLE_LOCK_REFUSAL);
+        return;
+    }
 
     // A firmware update is running (docs/BLE_OTA.md §7): nothing typed or sent,
     // from any source, may drive a coil. The dispatch layer refuses anyway
@@ -1188,7 +1222,14 @@ static void handleLine(char *line, ConsoleSource source) {
         settings_save();
     } else if (!strcmp(line, "reset")) {
         settings_factory();
+        ble_lock_after_settings_reset(Console);   // the lock is not a setting: keys written back
         Console.println("  reboot now to load factory defaults from config.h");
+    } else if (!strcmp(line, "lock") || !strncmp(line, "lock ", 5) ||
+               !strcmp(line, "claim") || !strncmp(line, "claim ", 6) ||
+               !strcmp(line, "auth") || !strncmp(line, "auth ", 5)) {
+        // The Bluetooth lock from USB (docs/BLE_LOCK.md): never locked here.
+        // Over Bluetooth these words never reach handleLine (ble_console).
+        ble_lock_handle_usb(line);
     } else if (!strncmp(line, "i2cwave", 7)) {
         // Bench signal test (include/i2c_wave.h): a square wave on the
         // power-board bus lines for the scope. The bus is down for the whole
@@ -1879,6 +1920,7 @@ void setup() {
     NimBLEDevice::init(BLE_MIDI_DEVICE_NAME);
     NimBLEDevice::setMTU(255);
     NimBLEServer *srv = NimBLEDevice::createServer();
+    ble_lock_init();            // the lock's keys + connection tracking, before anyone can connect
     ble_console_setup(srv);     // Nordic UART console (docs/BLE_SETTINGS.md)
     ble_ota_setup(srv);         // Device Information + firmware update (docs/BLE_OTA.md §3)
 
@@ -2042,6 +2084,14 @@ void loop() {
     // every pass during an update (notes are dropped at the funnel).
     ble_ota_tick();
 
+    // The Bluetooth lock (docs/BLE_LOCK.md): the pairing window and guest play
+    // end on time, a connection with five failed auths is dropped, closed
+    // connections are forgotten. The screen's "Let a new tablet pair" lands
+    // here (the LVGL callback only raises a flag). Before MIDI.read(), so an
+    // ended guest play stops notes in this very pass.
+    if (ui_take_pair_request()) ble_lock_open_window();
+    ble_lock_tick();
+
     // Read every MIDI message waiting, up to 32 a pass (each read() parses one
     // and runs our handleNoteOn/Off/CC callbacks, which fill eventQ). One read
     // a pass spread a chord sent in one BLE packet over one pass per note, and
@@ -2129,15 +2179,18 @@ void loop() {
         }
 
         // The status line: the BLE state, or the firmware update's text while
-        // one runs and for a minute after one (docs/BLE_OTA.md §7, §9). Set
-        // only when it changes; the BLE line goes back when the text ends.
+        // one runs and for a minute after one (docs/BLE_OTA.md §7, §9), else
+        // the bench signal test's, else the Bluetooth lock's pairing window or
+        // guest play (docs/BLE_LOCK.md). Set only when it changes; the BLE
+        // line goes back when the text ends.
         {
             static char s_otaShown[48] = "";
             char     ota[48];
             uint32_t otaRgb = 0;
+            bool     awake  = true;    // an update, its outcome or the bench test keeps the screen on
             if (!ble_ota_status_text(ota, sizeof ota, &otaRgb)) {
                 if (i2c_wave_status_text(ota, sizeof ota)) otaRgb = 0x60C0FF;   // the bench test, in the update's blue
-                else ota[0] = '\0';
+                else if (!ble_lock_status_text(ota, sizeof ota, &otaRgb, &awake)) ota[0] = '\0';
             }
             if (g_status_dirty || strcmp(ota, s_otaShown) != 0) {
                 g_status_dirty = false;
@@ -2145,8 +2198,8 @@ void loop() {
                 if (ota[0]) ui_set_status_text(ota, otaRgb);
                 snprintf(s_otaShown, sizeof s_otaShown, "%s", ota);
             }
-            // An update in progress, or its outcome on screen, keeps it awake.
-            if (ota[0]) s_lastNoteActivityMs = millis();
+            // Guest play can run for hours: it does not hold the AMOLED bright.
+            if (ota[0] && awake) s_lastNoteActivityMs = millis();
         }
 
         uint32_t now_locked = millis();

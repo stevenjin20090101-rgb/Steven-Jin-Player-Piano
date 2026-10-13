@@ -26,6 +26,13 @@
 // note and the four presets). Everything else — known or not — gets
 // BLE_REFUSAL, so a command added later stays bench-only until someone
 // allows it here.
+//
+// LOCK (2.1.0, ble_lock.h). Before the allow-list each line goes to the
+// Bluetooth lock: `claim`, `auth` and `lock …` are its own, and on a claimed
+// piano a connection that has not proved a key may run only dump, get,
+// status, help, off and broadcast (BLE_LOCK_REFUSAL for anything else,
+// panic included). Every write is tagged with its connection's generation,
+// so a line whose writer has left is never mistaken for a newcomer's.
 
 #pragma once
 
@@ -50,9 +57,10 @@ void ble_console_setup(NimBLEServer *srv);
 void ble_console_check();
 
 // loop(): run up to 4 complete lines that arrived over Bluetooth through
-// `handle` (a refused line gets BLE_REFUSAL instead). A testmin, testmax or
-// panic line ends the pass (they block). Replies are mirrored into the tee
-// for the asker if it is subscribed to TX. Returns the lines handled.
+// `handle` (the lock's lines go to ble_lock; a refused line gets
+// BLE_LOCK_REFUSAL or BLE_REFUSAL instead). A testmin, testmax or panic line
+// ends the pass (they block). Replies are mirrored into the tee for the asker
+// if it is subscribed to TX and still connected. Returns the lines handled.
 int ble_console_poll(ConsoleLineHandler handle);
 
 // loop(), once per pass near the end: send queued reply bytes to the asker as
