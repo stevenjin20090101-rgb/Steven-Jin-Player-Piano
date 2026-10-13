@@ -1,6 +1,6 @@
 # Locking the piano's Bluetooth to the school tablet — design and app contract
 
-**Status: design, 2026-10-12 — not built yet.** Requested by the app session after Steven's audit (2026-10-10):
+**Status: design, 2026-10-12; Steven's choices the same day: automatic first claim (no visit), and a guest switch.** Requested by the app session after Steven's audit (2026-10-10):
 "Lock the piano's Bluetooth" — only the school tablet may play, change settings or update; updates never go
 backwards. Firmware **2.1.0**. The app side ships first (app **1.25**); the firmware is published only after
 the tablet runs it.
@@ -23,6 +23,11 @@ locked is what an unproven connection may do.
   Opened only by someone with access: the piano's screen (**Settings › Let a new tablet pair**), the USB
   console (`lock open`), or an already-trusted device (`lock pairwindow`).
 - Trust ends with the connection. Every new connection authenticates again (fresh nonce).
+- **Guest play** (Steven, 2026-10-12): a trusted device (or the USB console) can let *anyone* play notes for
+  a while — `lock guest <minutes>` (1–240; `lock guest 0` ends it). During guest play an untrusted connection
+  may send notes and the pedal (as before the lock), but still cannot change settings or update. It ends at
+  the time, at `lock guest 0`, or at a restart; it survives connections changing (the tablet lets go, the iPad
+  connects). The piano's screen shows it.
 
 ## What an untrusted connection may do (claimed piano)
 
@@ -45,6 +50,7 @@ New facts in `dump` / `get`, after `!trips`:
 !lock=open|claimed|pairing
 !auth=0|1                       (this connection has proved a key)
 !nonce=<32 hex>                 (16 random bytes, new for every connection and after every failed auth)
+!guest=<seconds left>           (0 = guest play off)
 ```
 
 **Claim** (only while `open` or `pairing`):
@@ -64,7 +70,8 @@ New facts in `dump` / `get`, after `!trips`:
    At most one attempt a second; five failures on one connection → the piano disconnects it.
 
 **Management** (trusted connection or USB): `lock pairwindow` (5-minute window for another device),
-`lock forget` (remove every key → `open`). USB only: `lock open` (window), `lock reset` (= forget).
+`lock forget` (remove every key → `open`), `lock guest <minutes>` (guest play; 0 ends it). USB only:
+`lock open` (window), `lock reset` (= forget).
 
 ## Updates never go backwards
 
@@ -88,7 +95,8 @@ nothing can take the piano back to 2.0.x over Bluetooth (USB still can, at the b
    connection is trusted (the piano honours them untrusted).
 6. **Update errors:** ERR 11 "not authorised", ERR 12 "not newer than the piano's firmware".
 7. **Firmware page:** show the lock state; "Let another device pair (5 min)" → `lock pairwindow`;
-   "Unlock the piano" → `lock forget` (with a confirmation).
+   "Unlock the piano" → `lock forget` (with a confirmation); **"Let anyone play for 1 hour"** (a switch with
+   the time left from `!guest`) → `lock guest 60` / `lock guest 0`.
 8. **Models:** `EmulatedConsole` / `OtaPiano` learn the facts, `claim`, `auth`, ERR 11/12.
 
 ## Rollout (no visit needed in the normal case)
@@ -110,4 +118,5 @@ nothing can take the piano back to 2.0.x over Bluetooth (USB still can, at the b
   packets into the tablet's already-trusted connection. Bonding would close that, at the cost above.
 - **Anyone in range can still stop the music** (release-only commands and all-off are open on purpose) and
   read the settings and diagnostics.
-- **The iPad** (GarageBand and other MIDI apps) cannot authenticate: once claimed, it can no longer play.
+- **The iPad** (GarageBand and other MIDI apps) cannot authenticate: once claimed it plays only during guest
+  play, which a trusted device switches on.
