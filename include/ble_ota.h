@@ -32,6 +32,11 @@
 // the console refuses its energize commands, the pedal is held up and the
 // strip is dark. READY goes out only once coilsVerifiedOff() and the last
 // energize is 500 ms old; nothing unsigned is ever activated.
+//
+// LOCK AND ANTI-ROLLBACK (2.1.0, docs/BLE_LOCK.md). On a claimed piano BEGIN
+// needs a connection that proved a key (else ERR 11); BEGIN's version and the
+// version tag inside the signed image must be newer than FW_VERSION (else
+// ERR 12) — releases before 2.1.0 carry no tag, so none of them installs.
 
 #pragma once
 

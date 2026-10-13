@@ -12,6 +12,9 @@
 
 #include <esp_ota_ops.h>
 
+// The version tag (fw_info.h). One literal, so the bytes sit together in the image.
+extern "C" __attribute__((used)) const char g_fw_version_tag[] = "SJPV1:" FW_VERSION;
+
 const char *fw_version_full() {
     // One literal, so `strings firmware.bin` shows "2.0.0+a1b2c3d" whole —
     // tools/publish-firmware.sh checks the image for exactly that.

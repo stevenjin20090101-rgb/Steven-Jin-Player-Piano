@@ -1793,6 +1793,9 @@ void setup() {
     // makes kBuildProvenance a live reference so the linker's --gc-sections
     // can't drop the string — it then appears in `strings firmware.bin`.
     { volatile char _kp = kBuildProvenance[0]; (void)_kp; }
+    // The same for the version tag a Bluetooth update is checked against
+    // (fw_info.h; docs/BLE_LOCK.md "Updates never go backwards").
+    { volatile char _vt = g_fw_version_tag[0]; (void)_vt; }
 
     // Hardware watchdog. If the main loop hangs for more than 8 s (BLE host
     // task crash, Wire bus lockup, or any freeze), the ESP32 self-reboots.

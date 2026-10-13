@@ -10,7 +10,7 @@
 // include/ota_session.h for the contract and tools/ota-sim for the proof.
 //
 //   IDLE ──BEGIN passes checks──► PREPARING ──verified OFF + quiet──► RECEIVING
-//   RECEIVING ──END with every byte──► VERIFYING ──digest, signature, flashEnd──► REBOOTING
+//   RECEIVING ──END with every byte──► VERIFYING ──digest, signature, version tag, flashEnd──► REBOOTING
 //   any ERR / ABORT / lost link before END ──► IDLE (slot discarded, firmware unchanged)
 //
 // Deliberately plain C++11 on <stdint.h>, <stddef.h> and <string.h> only: no
@@ -41,8 +41,39 @@ const char *errName(uint8_t e) {
         case ERR_IMAGE:     return "image invalid";
         case ERR_TIMEOUT:   return "timeout";
         case ERR_SAFETY:    return "refused by safety";
+        case ERR_NOT_AUTHORISED: return "not authorised";
+        case ERR_NOT_NEWER: return "not newer";
         default:            return "error";
     }
+}
+
+// The version tag's marker, every byte + 1 (see VersionTagScanner): the
+// table holds "TKQW2;", never the marker itself, so the scanner cannot find
+// its own pattern in the image it runs from.
+const uint8_t kTagMarkerPlus1[6] = { 'S' + 1, 'J' + 1, 'P' + 1, 'V' + 1, '1' + 1, ':' + 1 };
+const uint8_t kTagMarkerLen      = 6;
+const uint8_t kTagVersionMax     = 16;
+
+// MAJOR.MINOR.PATCH at the start of `s` (1..9 digits each), then the end of
+// the string, '-' or '+'. False for anything else.
+bool parseVersion(const char *s, uint32_t v[3]) {
+    if (s == NULL) return false;
+    for (int k = 0; k < 3; k++) {
+        if (k > 0) {
+            if (*s != '.') return false;
+            s++;
+        }
+        int      digits = 0;
+        uint32_t x      = 0;
+        while (*s >= '0' && *s <= '9') {
+            if (++digits > 9) return false;
+            x = x * 10u + (uint32_t)(*s - '0');
+            s++;
+        }
+        if (digits == 0) return false;
+        v[k] = x;
+    }
+    return *s == '\0' || *s == '-' || *s == '+';
 }
 
 bool versionChar(uint8_t c) {
@@ -93,6 +124,77 @@ struct Line {
 };
 
 }  // namespace
+
+// ---- Versions --------------------------------------------------------------
+
+bool versionNewer(const char *candidate, const char *running) {
+    uint32_t a[3], b[3];
+    if (!parseVersion(candidate, a) || !parseVersion(running, b)) return false;
+    for (int k = 0; k < 3; k++) {
+        if (a[k] != b[k]) return a[k] > b[k];
+    }
+    return false;   // equal is not newer
+}
+
+VersionTagScanner::VersionTagScanner() { reset(); }
+
+void VersionTagScanner::reset() {
+    match_     = 0;
+    capturing_ = false;
+    capLen_    = 0;
+    found_     = false;
+    memset(cap_, 0, sizeof cap_);
+    memset(version_, 0, sizeof version_);
+}
+
+bool        VersionTagScanner::found() const   { return found_; }
+const char *VersionTagScanner::version() const { return version_; }
+
+void VersionTagScanner::feed(const uint8_t *bytes, size_t n) {
+    if (bytes == NULL) return;
+    for (size_t i = 0; i < n && !found_; i++) {
+        const uint8_t c = bytes[i];
+
+        // The marker matcher sees every byte, also while a version is being
+        // read, so a marker that begins inside a broken candidate is still
+        // found. The marker has no prefix that is also its suffix, so a
+        // mismatch can only restart the match at this byte.
+        bool marker = false;
+        if (c == (uint8_t)(kTagMarkerPlus1[match_] - 1)) {
+            if (++match_ == kTagMarkerLen) {
+                match_ = 0;
+                marker = true;
+            }
+        } else {
+            match_ = (c == (uint8_t)(kTagMarkerPlus1[0] - 1)) ? 1 : 0;
+        }
+
+        if (capturing_) {
+            if (c == 0) {                                   // the NUL ends the version
+                if (capLen_ > 0) {
+                    memcpy(version_, cap_, capLen_);
+                    version_[capLen_] = '\0';
+                    found_ = true;
+                }
+                capturing_ = false;
+                capLen_    = 0;
+                continue;
+            }
+            if (capLen_ < kTagVersionMax && versionChar(c)) {   // (the marker's last byte, ':',
+                cap_[capLen_++] = (char)c;                       //  is no version character)
+                continue;
+            }
+            capturing_ = false;                             // too long or a foreign byte: not the tag
+            capLen_    = 0;
+        }
+        if (marker) {                                       // the version follows
+            capturing_ = true;
+            capLen_    = 0;
+        }
+    }
+}
+
+// ---- Session ---------------------------------------------------------------
 
 Session::Session(Port &port)
     : port_(port), state_(IDLE), owner_(NO_CONN), updateMode_(false), restarted_(false),
@@ -161,7 +263,8 @@ void Session::onControl(uint16_t conn, const uint8_t *bytes, size_t n) {
 
 // BEGIN while idle. Checks that touch no hardware come first, so a refused
 // BEGIN never interrupts the music (BLE_OTA.md §6); each refusal answers the
-// sender and changes nothing else.
+// sender and changes nothing else. Order: pending (3) > frame (4) > not
+// authorised (11) > safe mode (10) > not newer (12) > size (2) > signature (6).
 void Session::begin(uint16_t conn, const uint8_t *b, size_t n) {
     if (port_.runningImagePending()) {
         refuse(conn, ERR_BUSY, "BEGIN while the running firmware is not confirmed yet");
@@ -185,8 +288,26 @@ void Session::begin(uint16_t conn, const uint8_t *b, size_t n) {
         refuse(conn, ERR_BAD_FRAME, "BEGIN version is not 1..16 of 0-9 A-Z a-z . + -, zero-padded");
         return;
     }
+    // The Bluetooth lock (docs/BLE_LOCK.md): only a connection that proved a
+    // key may update a claimed piano. Before anything that costs time.
+    if (!port_.authorised(conn)) {
+        refuse(conn, ERR_NOT_AUTHORISED, "this connection is not authorised (the piano is locked; send auth first)");
+        return;
+    }
     if (port_.crashSafeMode()) {
         refuse(conn, ERR_SAFETY, "crash-loop safe mode is on this boot — switch the piano off and on");
+        return;
+    }
+    // Updates never go backwards. BEGIN's version is not signed, so this only
+    // spares an honest app a minute of transfer; the version tag inside the
+    // signed image is checked after END.
+    char beginVersion[17];
+    memcpy(beginVersion, b + 101, 16);
+    beginVersion[16] = '\0';
+    const char *running = port_.runningVersion();
+    if (!versionNewer(beginVersion, running)) {
+        refuse(conn, ERR_NOT_NEWER, Line().s("BEGIN version ").s(beginVersion).s(" is not newer than the running ")
+                                          .s(running).b);
         return;
     }
     const uint32_t slot = port_.slotBytes();
@@ -263,6 +384,7 @@ void Session::onData(uint16_t conn, const uint8_t *bytes, size_t n) {
         return;
     }
     port_.shaUpdate(bytes + 2, len);
+    tag_.feed(bytes + 2, len);
     const uint8_t e = port_.flashWrite(bytes + 2, len);
     if (e != 0) {
         fail(e, Line().s("flash write at byte ").u(received_).b);
@@ -343,6 +465,7 @@ void Session::tickPreparing(uint32_t now) {
         }
         maxChunk_    = ((uint16_t)(mtu - 5) > kMaxChunk) ? kMaxChunk : (uint16_t)(mtu - 5);   // min(MTU − 5, 250)
         port_.shaStart();
+        tag_.reset();
         expectSeq_   = 0;
         received_    = 0;
         inWindow_    = 0;
@@ -361,7 +484,9 @@ void Session::tickPreparing(uint32_t now) {
 }
 
 // After END, in one pass, in this order (BLE_OTA.md §8): the digest of the
-// bytes received, the signature over THAT digest, then the slot switch.
+// bytes received, the signature over THAT digest, the version tag found in
+// those bytes (ERR 12 unless newer than the running firmware), then the slot
+// switch.
 void Session::verify() {
     uint8_t digest[32];
     port_.shaFinish(digest);
@@ -374,6 +499,19 @@ void Session::verify() {
     logSignatureTime("after END", t0);
     if (!signed_) {
         fail(ERR_SIGNATURE, "the signature does not verify over the received image");
+        return;
+    }
+    // Updates never go backwards: the version tag inside the signed bytes —
+    // found as they streamed in — must be there and newer than this firmware.
+    // Before flashEnd(), which is what switches the boot slot.
+    const char *running = port_.runningVersion();
+    if (!tag_.found()) {
+        fail(ERR_NOT_NEWER, "the image carries no version tag (releases before 2.1.0 have none)");
+        return;
+    }
+    if (!versionNewer(tag_.version(), running)) {
+        fail(ERR_NOT_NEWER, Line().s("the image's version tag ").s(tag_.version())
+                                  .s(" is not newer than the running ").s(running).b);
         return;
     }
     const uint8_t e = port_.flashEnd();
@@ -415,6 +553,7 @@ void Session::toIdle(const char *reason) {
     port_.flashAbort();
     memset(sha256_, 0, sizeof sha256_);       // forget the hash state
     memset(sig_, 0, sizeof sig_);
+    tag_.reset();
     inWindow_  = 0;
     expectSeq_ = 0;
     if (updateMode_) {

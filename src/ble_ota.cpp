@@ -11,6 +11,7 @@
 // everything here is the device side of its ota::Port, the two queues that
 // carry frames from the NimBLE task to loop(), rollback and the self-test.
 #include "ble_ota.h"
+#include "ble_lock.h"
 #include "ota_session.h"
 #include "ota_pubkey.h"
 #include "config.h"
@@ -201,6 +202,14 @@ public:
 
     bool crashSafeMode() override { return g_crashSafeMode; }
     bool runningImagePending() override { return s_runningPending; }
+
+    // The Bluetooth lock (docs/BLE_LOCK.md): the connection that holds this
+    // handle now has proved a key — or the piano is open. Asked once, at BEGIN.
+    bool authorised(uint16_t conn) override { return ble_lock_trusted_conn(conn); }
+
+    // Updates never go backwards: BEGIN's version and the image's signed tag
+    // must both be newer than this.
+    const char *runningVersion() override { return FW_VERSION; }
 
     uint32_t slotBytes() override {
         const esp_partition_t *p = esp_ota_get_next_update_partition(NULL);

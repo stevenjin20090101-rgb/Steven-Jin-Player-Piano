@@ -33,3 +33,13 @@ const char *fw_image_state_name();
 // The settings channel's !ota fact (BLE_SETTINGS.md section 4): "pending" while
 // the image is PENDING_VERIFY, "confirmed" once VALID, otherwise "none".
 const char *fw_ota_word();
+
+// The version tag a Bluetooth update is checked against (docs/BLE_LOCK.md,
+// "Updates never go backwards"; docs/BLE_OTA.md section 5): the 6 marker
+// bytes and FW_VERSION as one NUL-ended string inside the signed image. The
+// update session (ota_session.cpp) reads the tag of the image it receives and
+// activates it only if that version is newer than the running FW_VERSION.
+// Kept in the image by __attribute__((used)) and a volatile read in setup().
+// Never write the marker anywhere else in the firmware: the session takes
+// the first well-formed tag it finds.
+extern "C" const char g_fw_version_tag[];

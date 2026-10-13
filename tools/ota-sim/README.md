@@ -10,7 +10,8 @@ The fake port has a fake clock (one `tick()` = one loop pass = 1 ms), links
 that can drop, an MTU per link, scripted failures (coils that never verify
 off, a recent energize, a pending image, safe mode, a refused signature, each
 flash call failing with 7 or 8, notifications refused for a while), and it
-records every notification and port call. The SHA-256 is written in
+records every notification and port call (from 2.1.0 also which connections
+the lock trusts and the running version). The SHA-256 is written in
 `sim.cpp` and checked against the FIPS 180-4 vectors; the "signature" check
 accepts §5's real Ed25519 signature for §5's digest and a digest-bound fake
 for every other image.
@@ -27,7 +28,10 @@ Scenarios (`sim.cpp`, one OK/FAIL line each):
 - `worked_example` — §5 byte for byte: BEGIN's 118 bytes, `81 FA 00 10`, the
   Data dumps, 3,965 frames (the last 232 bytes), ACK `85 A0 0F 00 00` after
   seq 15 and `85 60 13 0F 00` after seq 3951, `85 00 20 0F 00`, the image's
-  SHA-256 `6d872b96…12c6`, `82`, `83 DC 05` on the next pass, `restart()`
+  SHA-256 `6d872b96…12c6`, `82` — then, from 2.1.0, `E1 0C`: the documented
+  image predates the version tag, so the hash and the real signature pass and
+  the missing tag refuses it. `worked_example_tagged` runs the same flow with a
+  tagged image of the same size: `83 DC 05` on the next pass, `restart()`
   1,500 ms later; update mode entered once, never left; every whole percent
   reported once.
 - One per row of §5's error table: `err1_not_verified`, `err1_not_quiet`,
@@ -50,6 +54,20 @@ Scenarios (`sim.cpp`, one OK/FAIL line each):
 - Sizes: `mtu23` (maxChunk 18), `mtu517` (still 250), `mtu_zero`, `wrap`
   (65,592 frames: the 16-bit sequence number wraps), `window1`, `window32`,
   `partial_last_window`; and `sha256_selftest`.
+- 2.1.0, the lock and anti-rollback (docs/BLE_LOCK.md): `err11_not_authorised`
+  (BEGIN from an untrusted connection: `E1 0B`, update mode never entered),
+  `err12_begin_not_newer` (BEGIN equal or older: `E1 0C` at once),
+  `err12_after_end` (tag missing, equal, older, malformed, too long, empty, or
+  equal under a BEGIN that claims newer: `82`, `E1 0C`, never activated),
+  `tag_split_frames` (the tag split after each of its 12 bytes, and over three
+  frames at MTU 23), `tag_decoy` (the scanner's own shifted table is not the
+  tag; restarts, a marker inside a broken candidate, first tag wins),
+  `version_compare`, and the check order in `begin_check_order`: pending (3) >
+  frame (4) > not authorised (11) > safe mode (10) > not newer (12) > size (2) >
+  signature (6). The fake runs firmware `2.0.2`; test images carry the tag
+  `2.1.0` a quarter of the way in.
+- `./sim --scan ../../.pio/build/lilygo-t4-s3/firmware.bin` reports the tag the
+  session finds in a built image and how often the marker occurs (once).
 
 Every scenario also checks the invariants: never an empty notification;
 update mode entered and left in pairs, coils polled only inside it; READY

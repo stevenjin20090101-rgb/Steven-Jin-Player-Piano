@@ -26,6 +26,15 @@
 // the point of no return: from VERIFYING on, every Control frame (ABORT and
 // BEGIN too) and a lost link are ignored, and the piano restarts with or
 // without the app.
+//
+// LOCK AND ANTI-ROLLBACK (2.1.0, docs/BLE_LOCK.md). BEGIN from a connection
+// the Bluetooth lock does not trust gets ERR 11; BEGIN whose own version is
+// not newer than the running FW_VERSION gets ERR 12 at once. BEGIN's version
+// is not signed, so the real check is on a version tag inside the signed
+// bytes (the 6 marker bytes "S" "J" "P" "V" "1" ":" then the version, NUL
+// ended), found by VersionTagScanner as the image streams in: after the hash
+// and the signature pass, an image without the tag, or whose tag is not
+// newer, gets ERR 12 and the slot is never activated.
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
@@ -35,9 +44,38 @@ namespace ota {
 enum : uint8_t { OP_BEGIN = 0x01, OP_END = 0x02, OP_ABORT = 0x03,
                  OP_READY = 0x81, OP_VERIFYING = 0x82, OP_OK = 0x83, OP_ABORTED = 0x84, OP_ACK = 0x85, OP_ERR = 0xE1 };
 enum Err : uint8_t { ERR_NOT_QUIET = 1, ERR_TOO_LARGE = 2, ERR_BUSY = 3, ERR_BAD_FRAME = 4, ERR_HASH = 5,
-                     ERR_SIGNATURE = 6, ERR_FLASH = 7, ERR_IMAGE = 8, ERR_TIMEOUT = 9, ERR_SAFETY = 10 };
+                     ERR_SIGNATURE = 6, ERR_FLASH = 7, ERR_IMAGE = 8, ERR_TIMEOUT = 9, ERR_SAFETY = 10,
+                     ERR_NOT_AUTHORISED = 11, ERR_NOT_NEWER = 12 };
 enum State : uint8_t { IDLE, PREPARING, RECEIVING, VERIFYING, REBOOTING };
 static const uint16_t NO_CONN = 0xFFFF;
+
+// True only when `candidate` is a strictly newer version than `running`.
+// Both must start MAJOR.MINOR.PATCH (decimal, 1..9 digits each), followed by
+// nothing, "-…" or "+…"; the suffix is ignored, so "2.1.0-rc.1" equals
+// "2.1.0". Equal, older or unparseable: false (an update is refused).
+bool versionNewer(const char *candidate, const char *running);
+
+// Finds the image's version tag in a byte stream fed in any pieces (a tag
+// split across Data frames is found the same): the 6 marker bytes, then 1..16
+// characters of 0-9 A-Z a-z . + -, then a NUL. A candidate that breaks those
+// rules is skipped and the scan goes on; the first well-formed tag wins.
+// The marker is stored with every byte + 1, so this code never contains the
+// marker itself (the firmware image holds exactly one copy: the real tag).
+class VersionTagScanner {
+public:
+    VersionTagScanner();
+    void        reset();
+    void        feed(const uint8_t *bytes, size_t n);
+    bool        found() const;
+    const char *version() const;     // "" until found
+private:
+    uint8_t match_;                  // marker bytes matched so far, 0..5
+    bool    capturing_;              // the marker is complete: reading the version
+    uint8_t capLen_;
+    char    cap_[17];
+    bool    found_;
+    char    version_[17];
+};
 
 // The device, as the session sees it. The ESP32 glue implements it once.
 struct Port {
@@ -48,6 +86,8 @@ struct Port {
     virtual bool     notify(uint16_t conn, const uint8_t *bytes, size_t n) = 0;  // false = not sent; the session keeps it and retries
     virtual bool     crashSafeMode() = 0;
     virtual bool     runningImagePending() = 0;
+    virtual bool     authorised(uint16_t conn) = 0;      // the Bluetooth lock trusts this connection (always, while open)
+    virtual const char *runningVersion() = 0;             // FW_VERSION, e.g. "2.1.0"
     virtual uint32_t slotBytes() = 0;
     virtual bool     signatureOk(const uint8_t sig[64], const uint8_t digest[32]) = 0;
     virtual void     enterUpdateMode() = 0;   // inhibit energize, flush note queue, allKeysOff, strip dark, pedal up
@@ -124,6 +164,7 @@ private:
     uint8_t  shownPct_;
     Note     out_[kOutboxDepth];   // notifications the port could not send yet, oldest first
     uint8_t  outN_;
+    VersionTagScanner tag_;        // the received image's version tag (from READY on)
 };
 
 }  // namespace ota

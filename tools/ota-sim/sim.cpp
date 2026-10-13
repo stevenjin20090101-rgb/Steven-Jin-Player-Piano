@@ -22,6 +22,16 @@
 // One loop pass of the glue = Session::tick() = 1 ms of fake time. See
 // docs/BLE_OTA.md and docs/SAFETY.md rule 9. Add a scenario whenever you
 // touch src/ota_session.cpp.
+//
+// From 2.1.0 (docs/BLE_LOCK.md) the fake runs firmware "2.0.2", trusts every
+// connection unless told otherwise (ERR 11), and every test image carries a
+// version tag "2.1.0" inside its signed bytes — except §5's worked-example
+// image, whose documented bytes predate the tag: it is now refused after END
+// with ERR 12 (hash and signature pass, no tag). `worked_example_tagged` runs
+// the same flow with a tagged image of the same size and ends in OK.
+//
+//   ./sim --scan <file>            report the version tag the session finds in a file
+//                                  (e.g. ../../.pio/build/lilygo-t4-s3/firmware.bin)
 #include "ota_session.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -169,13 +179,34 @@ struct Image { Bytes bytes; uint8_t sha[32]; uint8_t sig[64]; };
 static void fakeSign(const uint8_t digest[32], uint8_t sig[64]) {
     for (int i = 0; i < 64; i++) sig[i] = (uint8_t)(digest[i % 32] ^ (0xA5 + 3 * i));
 }
-static Image makeImage(size_t n) {
+// The version tag as the firmware builds it ("SJPV1:" FW_VERSION, NUL ended).
+static Bytes tagBytes(const char *version) {
+    std::string t = std::string("SJPV1:") + version;
+    Bytes b(t.begin(), t.end());
+    b.push_back(0);
+    return b;
+}
+static void reseal(Image &im) {                    // hash and fake-sign the bytes as they are now
+    sha256(im.bytes.data(), im.bytes.size(), im.sha);
+    fakeSign(im.sha, im.sig);
+}
+// §5's pattern byte[i] = (0xE9 + 7·i) & 0xFF, then `extra` written at `at`.
+static Image patternImage(size_t n, const Bytes &extra = Bytes(), size_t at = 0) {
     Image im;
     im.bytes.resize(n);
     for (size_t i = 0; i < n; i++) im.bytes[i] = (uint8_t)((0xE9 + 7 * i) & 0xFF);
-    sha256(im.bytes.data(), n, im.sha);
-    fakeSign(im.sha, im.sig);
-    if (n == kDocSize) memcpy(im.sig, &unhex(kDocBegin)[37], 64);   // the worked example's real signature
+    for (size_t i = 0; i < extra.size() && at + i < n; i++) im.bytes[at + i] = extra[i];
+    reseal(im);
+    return im;
+}
+// A test image: §5's pattern with the tag `version` a quarter of the way in.
+static Image makeImage(size_t n, const char *version = "2.1.0") {
+    return patternImage(n, tagBytes(version), n / 4);
+}
+// §5's worked-example image exactly as documented: no tag, the real signature.
+static Image docImage() {
+    Image im = patternImage(kDocSize);
+    memcpy(im.sig, &unhex(kDocBegin)[37], 64);
     return im;
 }
 static Bytes beginFrame(uint32_t size, const uint8_t sha[32], const uint8_t sig[64], const char *version, uint8_t window) {
@@ -208,6 +239,9 @@ struct Fake : ota::Port {
 
     // scripted behaviour
     bool     safeMode = false, pendingImage = false;
+    std::string running = "2.0.2";               // runningVersion(): the firmware the piano runs
+    std::vector<uint16_t> untrusted;             // connections the lock does not trust (ERR 11)
+    int      authCalls = 0;
     uint32_t slot = 6553600;                     // app0/app1 in default_16MB.csv
     bool     coilsOff = true;                    // coilsVerifiedOff()'s answer ...
     uint32_t coilsOffFrom = 0;                   // ... from this time on
@@ -277,6 +311,12 @@ struct Fake : ota::Port {
     }
     bool crashSafeMode() override { return safeMode; }
     bool runningImagePending() override { return pendingImage; }
+    bool authorised(uint16_t c) override {
+        authCalls++;
+        for (size_t i = 0; i < untrusted.size(); i++) if (untrusted[i] == c) return false;
+        return true;
+    }
+    const char *runningVersion() override { return running.c_str(); }
     uint32_t slotBytes() override { return slot; }
     bool signatureOk(const uint8_t s[64], const uint8_t d[32]) override {
         sigCalls++;
@@ -487,7 +527,9 @@ static std::string tail(const Rig &r, uint16_t conn = 1, size_t n = 3) {
 }
 
 // ---- scenarios -------------------------------------------------------------
-static Image g_doc, g_small;   // §5's image; a 4,000-byte one (one window) for the quick refusals
+// §5's image (no tag); the same size tagged "2.1.0" (fake-signed) for transfers that must
+// complete; a 4,000-byte tagged one (one window) for the quick refusals.
+static Image g_doc, g_docTagged, g_small;
 
 static void scSha(Check &c) {
     uint8_t d[32];
@@ -507,16 +549,11 @@ static void scSha(Check &c) {
     c.summary = "FIPS 180-4 vectors: \"\", \"abc\", 448-bit, 10^6 x 'a'";
 }
 
-static void scWorkedExample(Check &c) {
-    const Image &im = g_doc;
-    c.expect(hex(im.sha, 32, false) == kDocSha, "the simulator's SHA-256 of the image is §5's 6d872b96…12c6");
-    Bytes sigB64 = base64(kDocSigB64);
-    c.expect(sigB64.size() == 64 && memcmp(sigB64.data(), im.sig, 64) == 0, "§10's manifest sig is §5's BEGIN bytes 37..100");
-    Bytes begin = beginFor(im, 16, "2.1.0");
-    c.expect(begin == unhex(kDocBegin), "BEGIN built from the fields is §5's 118 bytes");
-
-    Rig r;
-    App a(r, im);
+// §5's flow for a 991,232-byte image: BEGIN, READY 81 FA 00 10, 3,965 frames in
+// windows of 16 with every ACK, END, 82. Data 0, 1 and 3964 are checked as §5
+// prints them (the tagged image differs only at byte 247,808, in frame 991).
+static void workedFlow(Check &c, Rig &r, App &a, const Bytes &begin) {
+    const Image &im = a.im;
     r.control(1, begin);
     c.expect(r.s.state() == ota::PREPARING && r.p.enter == 1 && r.p.sent.empty(), "BEGIN: PREPARING, piano stopped, nothing sent yet");
     c.expect(a.ready() && r.p.heard(1)[0] == "81 FA 00 10", "READY 81 FA 00 10");
@@ -546,6 +583,45 @@ static void scWorkedExample(Check &c) {
     c.expect(hex(a.wait(0)) == "82" && r.s.state() == ota::VERIFYING && r.p.shaFinishes == 0 && r.p.fEnd == 0,
              "END: 82 at once, the check waits for the next pass");
     r.tick();
+    c.expect(r.p.fBytes == kDocSize, "flash got every byte");
+    uint8_t d[32];
+    Sha256 fs = r.p.fSha;
+    fs.finish(d);
+    c.expect(memcmp(d, im.sha, 32) == 0, "flash got exactly the image, in order");
+    c.expect(r.p.sigCalls == 2 && r.p.sigDigests[0] == Bytes(im.sha, im.sha + 32) && r.p.sigDigests[1] == Bytes(im.sha, im.sha + 32),
+             "signature checked at BEGIN over BEGIN's digest, after END over the digest of the bytes received");
+}
+
+// §5 byte for byte. Its image predates the version tag, so a 2.1.0 piano
+// takes every frame, checks the hash and the (real) signature, then refuses
+// it: 82, E1 0C (ERR 12, no tag) — the slot is never activated.
+static void scWorkedExample(Check &c) {
+    const Image &im = g_doc;
+    c.expect(hex(im.sha, 32, false) == kDocSha, "the simulator's SHA-256 of the image is §5's 6d872b96…12c6");
+    Bytes sigB64 = base64(kDocSigB64);
+    c.expect(sigB64.size() == 64 && memcmp(sigB64.data(), im.sig, 64) == 0, "§10's manifest sig is §5's BEGIN bytes 37..100");
+    Bytes begin = beginFor(im, 16, "2.1.0");
+    c.expect(begin == unhex(kDocBegin), "BEGIN built from the fields is §5's 118 bytes");
+
+    Rig r;                                        // the piano runs 2.0.2: BEGIN's 2.1.0 is newer
+    App a(r, im);
+    workedFlow(c, r, a, begin);
+    c.expect(hex(a.wait(0)) == "E1 0C" && r.s.state() == ota::IDLE, "then E1 0C: the image has no version tag");
+    c.expect(r.p.fEnd == 0 && r.p.activated == 0, "slot never activated");
+    r.ticks(5000);
+    c.expect(r.p.restarts == 0, "no restart");
+    c.expect(r.p.logsWith("ERR 12 (not newer): the image carries no version tag") == 1, "serial: no version tag");
+    outcome(c, r, cat(cat(L({"81 FA 00 10"}), acksFor(kDocSize, 250, 16)), L({"82", "E1 0C"})), ota::IDLE, 1, 1);
+    c.summary = "§5's frames unchanged: 81 FA 00 10 · 3965 frames · 248 ACKs … 85 00 20 0F 00 · 82 · E1 0C (hash + real sig pass, no version tag) · sha 6d872b96…12c6";
+}
+
+// The same flow with an image of §5's size that carries the tag "2.1.0":
+// OK 83 DC 05 on the pass after END, restart 1,500 ms later.
+static void scWorkedExampleTagged(Check &c) {
+    const Image &im = g_docTagged;
+    Rig r;
+    App a(r, im);
+    workedFlow(c, r, a, beginFor(im, 16, "2.1.0"));
     c.expect(hex(a.wait(0)) == "83 DC 05" && r.s.state() == ota::REBOOTING, "OK 83 DC 05 on the next pass");
     c.expect(r.p.activated == 1 && r.p.version == "2.1.0" && r.p.fEnd == 1, "flashEnd() then onActivated(\"2.1.0\")");
     const uint32_t okAt = r.p.t;
@@ -555,12 +631,6 @@ static void scWorkedExample(Check &c) {
     c.expect(r.p.restarts == 1 && r.p.restartAt == okAt + 1500 && r.p.restartConn == 1, "restart(owner) 1,500 ms after OK");
     r.ticks(5000);
     c.expect(r.p.restarts == 1, "restart() called once");
-    c.expect(r.p.fBytes == kDocSize, "flash got every byte");
-    uint8_t d[32];
-    r.p.fSha.finish(d);
-    c.expect(memcmp(d, im.sha, 32) == 0, "flash got exactly the image, in order");
-    c.expect(r.p.sigCalls == 2 && r.p.sigDigests[0] == Bytes(im.sha, im.sha + 32) && r.p.sigDigests[1] == Bytes(im.sha, im.sha + 32),
-             "signature checked at BEGIN over BEGIN's digest, after END over the digest of the bytes received");
     std::vector<std::pair<int, int> > want;
     want.push_back(std::make_pair((int)ota::PREPARING, 0));
     for (int pct = 0; pct <= 100; pct++) want.push_back(std::make_pair((int)ota::RECEIVING, pct));
@@ -568,7 +638,7 @@ static void scWorkedExample(Check &c) {
     want.push_back(std::make_pair((int)ota::REBOOTING, 100));
     c.expect(r.p.progress == want, "onProgress: PREPARING, every whole percent 0..100 once, VERIFYING, REBOOTING");
     outcome(c, r, cat(cat(L({"81 FA 00 10"}), acksFor(kDocSize, 250, 16)), L({"82", "83 DC 05"})), ota::REBOOTING, 1, 0);
-    c.summary = "81 FA 00 10 · 3965 frames (last 232 B) · 248 ACKs 85 A0 0F 00 00 … 85 60 13 0F 00 · 85 00 20 0F 00 · 82 · 83 DC 05 · restart +1500 ms · sha 6d872b96…12c6";
+    c.summary = "tag 2.1.0 at byte 247,808, piano on 2.0.2: same frames and ACKs · 82 · 83 DC 05 · restart +1500 ms";
 }
 
 static void scErr1NotVerified(Check &c) {
@@ -665,7 +735,7 @@ static void scErr3SecondBeginPreparing(Check &c) {
 
 static void scErr3SecondBeginReceiving(Check &c) {
     Rig r;
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     a.begin();
     c.expect(a.ready() && a.send(2), "two windows in");
     a.begin();
@@ -725,35 +795,38 @@ static void scErr4BeginVersion(Check &c) {
 
     Rig r16;                                      // 16 characters, no NUL at all: the whole field
     App a16(r16, g_small);
-    c.expect(a16.full(16, 0, "0123456789abcDEF") && r16.p.version == "0123456789abcDEF", "16-character version kept whole");
+    c.expect(a16.full(16, 0, "2.1.0-0123456789") && r16.p.version == "2.1.0-0123456789", "16-character version kept whole");
     Rig rp;
     App ap(rp, g_small);
     c.expect(ap.full(16, 0, "2.1.0-rc.1+ab") && rp.p.version == "2.1.0-rc.1+ab", "every allowed punctuation");
-    c.summary = "empty, space, '_', non-ASCII, '/', byte after NUL, leading NUL: E1 04 · 16 chars and . + - accepted";
+    Rig rn;                                       // a well-formed field that is no version: past the frame
+    rn.control(1, beginFor(g_small, 16, "0123456789abcDEF"));   // check (4), refused as not newer (12)
+    outcome(c, rn, L({"E1 0C"}), ota::IDLE, 0, 0);
+    c.summary = "empty, space, '_', non-ASCII, '/', byte after NUL, leading NUL: E1 04 · 16 chars and . + - accepted · \"0123456789abcDEF\": E1 0C";
 }
 
 static void scErr4SeqGap(Check &c) {
     Rig r;                                        // §13 run 6: Data seq 5 first
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     a.begin();
     a.ready();
-    r.data(1, dataFrame(5, g_doc.bytes, 0, 250));
+    r.data(1, dataFrame(5, g_docTagged.bytes, 0, 250));
     c.expect(r.p.fWrites == 0, "nothing written");
     outcome(c, r, L({"81 FA 00 10", "E1 04"}), ota::IDLE, 1, 1);
 
     Rig r2;                                       // a gap after a full window
-    App a2(r2, g_doc);
+    App a2(r2, g_docTagged);
     a2.begin();
     a2.ready();
     a2.send(1);
-    r2.data(1, dataFrame(17, g_doc.bytes, 4000, 250));
+    r2.data(1, dataFrame(17, g_docTagged.bytes, 4000, 250));
     c.expect(r2.p.heard(1) == L({"81 FA 00 10", "85 A0 0F 00 00", "E1 04"}), "seq 17 after 15: E1 04");
     Rig r3;                                       // a repeat
-    App a3(r3, g_doc);
+    App a3(r3, g_docTagged);
     a3.begin();
     a3.ready();
     a3.send(1);
-    r3.data(1, dataFrame(15, g_doc.bytes, 4000, 250));
+    r3.data(1, dataFrame(15, g_docTagged.bytes, 4000, 250));
     c.expect(r3.p.heard(1) == L({"81 FA 00 10", "85 A0 0F 00 00", "E1 04"}), "seq 15 again: E1 04");
     c.summary = "seq 5 first: E1 04 · a skipped and a repeated seq: E1 04";
 }
@@ -773,20 +846,20 @@ static void scErr4ShortData(Check &c) {
 
 static void scErr4PayloadTooBig(Check &c) {
     Rig r;
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     a.begin();
     a.ready();
     a.frame(250);                                 // the limit itself is fine
-    r.data(1, dataFrame(1, g_doc.bytes, 250, 251));
+    r.data(1, dataFrame(1, g_docTagged.bytes, 250, 251));
     outcome(c, r, L({"81 FA 00 10", "E1 04"}), ota::IDLE, 1, 1);
 
     Rig r2;
     r2.p.links[0].mtu = 23;
-    App a2(r2, g_doc);
+    App a2(r2, g_docTagged);
     a2.begin();
     a2.ready();
     a2.frame(18);
-    r2.data(1, dataFrame(1, g_doc.bytes, 18, 19));
+    r2.data(1, dataFrame(1, g_docTagged.bytes, 18, 19));
     c.expect(r2.p.heard(1) == L({"81 12 00 10", "E1 04"}), "MTU 23: 18 fine, 19 E1 04");
     c.summary = "MTU 255: 250 fine, 251 E1 04 · MTU 23: 18 fine, 19 E1 04";
 }
@@ -807,7 +880,7 @@ static void scErr4PastSize(Check &c) {
 static void scErr4DataDropped(Check &c) {
     Rig r;
     r.p.coilsOff = false;
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     r.s.onDataDropped();                          // idle: nothing
     a.begin();
     r.s.onDataDropped();                          // PREPARING: nothing
@@ -821,7 +894,7 @@ static void scErr4DataDropped(Check &c) {
 
 static void scErr4EarlyEnd(Check &c) {
     Rig r;
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     a.begin();
     a.ready();
     a.send(2);
@@ -843,7 +916,7 @@ static void scErr4UnknownOpcode(Check &c) {
     r.control(1, Bytes(1, 0x07));                 // idle: answered, nothing else
     outcome(c, r, L({"E1 04"}), ota::IDLE, 0, 0);
     Rig r2;
-    App a2(r2, g_doc);
+    App a2(r2, g_docTagged);
     a2.begin();
     a2.ready();
     a2.send(1);
@@ -883,10 +956,10 @@ static void scErr4EmptyControl(Check &c) {
 
 static void scErr5Hash(Check &c) {
     Rig r;                                        // §13 run 1: one image byte flipped, original sha/sig
-    Image bent = g_doc;
+    Image bent = g_docTagged;
     bent.bytes[500000] ^= 1;
-    memcpy(bent.sha, g_doc.sha, 32);
-    memcpy(bent.sig, g_doc.sig, 64);
+    memcpy(bent.sha, g_docTagged.sha, 32);
+    memcpy(bent.sig, g_docTagged.sig, 64);
     App a(r, bent);
     c.expect(!a.full() , "the transfer runs to END");
     c.expect(r.p.sigCalls == 1 && r.p.fEnd == 0 && r.p.activated == 0 && r.p.restarts == 0,
@@ -898,7 +971,7 @@ static void scErr5Hash(Check &c) {
 
 static void scErr6Begin(Check &c) {
     Rig r;                                        // §13 run 2: one bit of sig flipped
-    Image im = g_doc;
+    Image im = g_docTagged;
     im.sig[10] ^= 0x04;
     App a(r, im);
     a.begin();
@@ -911,9 +984,9 @@ static void scErr6Begin(Check &c) {
 static void scErr6AfterEnd(Check &c) {
     Rig r;
     r.p.failSigCall = 2;                          // the check after END fails
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     c.expect(!a.full(), "the transfer runs to END");
-    c.expect(r.p.sigCalls == 2 && r.p.sigDigests[1] == Bytes(g_doc.sha, g_doc.sha + 32), "second check over the received digest");
+    c.expect(r.p.sigCalls == 2 && r.p.sigDigests[1] == Bytes(g_docTagged.sha, g_docTagged.sha + 32), "second check over the received digest");
     c.expect(r.p.fEnd == 0 && r.p.activated == 0 && r.p.restarts == 0, "slot never activated, no restart");
     outcome(c, r, cat(cat(L({"81 FA 00 10"}), acksFor(kDocSize, 250, 16)), L({"82", "E1 06"})), ota::IDLE, 1, 1);
     c.summary = tail(r) + " · slot never activated · leave 1 · flashAbort 1";
@@ -925,7 +998,7 @@ static void flashErr(Check &c, FlashCall call, uint8_t code) {
     Rig r;
     char e[8];
     snprintf(e, sizeof e, "E1 %02X", code);
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     if (call == BEGIN_CALL) {
         r.p.failBegin = code;
         a.begin();
@@ -960,7 +1033,7 @@ static void scErr8FlashEnd(Check &c)   { flashErr(c, END_CALL, ota::ERR_IMAGE); 
 
 static void scErr9Timeout(Check &c) {
     Rig r;                                        // §13 run 5: stop sending after 5 windows
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     a.begin();
     a.ready();
     a.send(5);
@@ -972,7 +1045,7 @@ static void scErr9Timeout(Check &c) {
     outcome(c, r, cat(cat(L({"81 FA 00 10"}), acksFor(kDocSize, 250, 16, 5)), L({"E1 09"})), ota::IDLE, 1, 1);
 
     Rig r2;                                       // a frame at +9,999 ms keeps it alive
-    App a2(r2, g_doc);
+    App a2(r2, g_docTagged);
     a2.begin();
     a2.ready();
     a2.send(1);
@@ -995,28 +1068,31 @@ static void scErr10SafeMode(Check &c) {
 }
 
 static void scBeginCheckOrder(Check &c) {
-    struct Case { const char *what; bool pending, safe; uint32_t size; uint8_t window; bool badSig; const char *want; };
+    struct Case { const char *what; bool pending, untrusted, safe; const char *version; uint32_t size; uint8_t window; bool badSig; const char *want; };
     const Case cases[] = {
-        {"pending + bad window + safe mode", true, true, 4000, 0, true, "E1 03"},
-        {"bad window + safe mode", false, true, 4000, 0, false, "E1 04"},
-        {"safe mode + too large + bad sig", false, true, 7000000, 16, true, "E1 0A"},
-        {"too large + bad sig", false, false, 7000000, 16, true, "E1 02"},
-        {"bad sig only", false, false, 4000, 16, true, "E1 06"},
+        {"pending + bad window + untrusted + safe mode", true, true, true, "2.0.1", 4000, 0, true, "E1 03"},
+        {"bad window + untrusted + safe mode", false, true, true, "2.0.1", 4000, 0, false, "E1 04"},
+        {"untrusted + safe mode + older + too large", false, true, true, "2.0.1", 7000000, 16, true, "E1 0B"},
+        {"safe mode + older + too large + bad sig", false, false, true, "2.0.1", 7000000, 16, true, "E1 0A"},
+        {"older + too large + bad sig", false, false, false, "2.0.1", 7000000, 16, true, "E1 0C"},
+        {"too large + bad sig", false, false, false, "2.1.0", 7000000, 16, true, "E1 02"},
+        {"bad sig only", false, false, false, "2.1.0", 4000, 16, true, "E1 06"},
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         const Case &k = cases[i];
         Rig r;
         r.p.pendingImage = k.pending;
         r.p.safeMode = k.safe;
+        if (k.untrusted) r.p.untrusted.push_back(1);
         uint8_t sig[64];
         memcpy(sig, g_small.sig, 64);
         if (k.badSig) sig[0] ^= 1;
-        r.control(1, beginFrame(k.size, g_small.sha, sig, "2.1.0", k.window));
+        r.control(1, beginFrame(k.size, g_small.sha, sig, k.version, k.window));
         c.expect(r.p.heard(1) == L({k.want}), std::string(k.what) + ": want " + k.want + ", heard " + join(r.p.heard(1)));
         c.expect(r.p.sigCalls == (strcmp(k.want, "E1 06") == 0 ? 1 : 0), std::string(k.what) + ": signature checked only when everything else passed");
         invariants(c, r);
     }
-    c.summary = "pending (3) > frame (4) > safe mode (10) > size (2) > signature (6)";
+    c.summary = "pending (3) > frame (4) > not authorised (11) > safe mode (10) > not newer (12) > size (2) > signature (6)";
 }
 
 static void scAbortIdle(Check &c) {
@@ -1043,7 +1119,7 @@ static void scAbortPreparing(Check &c) {
 
 static void scAbortReceiving(Check &c) {
     Rig r;                                        // §13 run 3: ABORT after 20 windows
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     a.begin();
     a.ready();
     a.send(20);
@@ -1085,7 +1161,7 @@ static void scOwnerGonePreparing(Check &c) {
 
 static void scOwnerGoneReceiving(Check &c) {
     Rig r;                                        // §13 run 4: disconnect after 20 windows
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     a.begin();
     a.ready();
     a.send(20);
@@ -1093,7 +1169,7 @@ static void scOwnerGoneReceiving(Check &c) {
     r.tick();
     outcome(c, r, cat(L({"81 FA 00 10"}), acksFor(kDocSize, 250, 16, 20)), ota::IDLE, 1, 1);
     r.p.links.push_back(Fake::Link{2, true, 255, false}); // reconnect: a new update succeeds
-    App b(r, g_doc, 2);
+    App b(r, g_docTagged, 2);
     c.expect(b.full(), "a new update over the new link succeeds");
     c.expect(r.p.enter == 2 && r.p.leave == 1 && r.p.activated == 1, "second session activated");
     c.summary = "link lost after 20 windows: no notification · leave 1 · flashAbort 1 · next update succeeds";
@@ -1120,9 +1196,9 @@ static void scForeignConn(Check &c) {
     r.p.links.push_back(Fake::Link{2, true, 255, false});
     r.control(2, Bytes(1, ota::OP_ABORT));        // idle: conn 2 is answered
     r.p.coilsOff = false;
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     a.begin();
-    const Bytes begin2 = beginFor(g_doc);
+    const Bytes begin2 = beginFor(g_docTagged);
     std::vector<Bytes> noise;
     noise.push_back(begin2);
     noise.push_back(Bytes(1, ota::OP_END));
@@ -1134,8 +1210,8 @@ static void scForeignConn(Check &c) {
     a.ready();
     a.send(3);
     for (size_t i = 0; i < noise.size(); i++) r.control(2, noise[i]);   // RECEIVING
-    r.data(2, dataFrame(a.seq, g_doc.bytes, a.at, 250));               // the expected seq, but not the owner's
-    r.data(2, dataFrame(0, g_doc.bytes, 0, 250));
+    r.data(2, dataFrame(a.seq, g_docTagged.bytes, a.at, 250));               // the expected seq, but not the owner's
+    r.data(2, dataFrame(0, g_docTagged.bytes, 0, 250));
     c.expect(r.s.received() == 3 * 4000, "foreign Data neither counted nor written");
     c.expect(a.send(), "the owner's next frame is still the expected one");
     a.end();
@@ -1151,7 +1227,7 @@ static void scForeignConn(Check &c) {
 
 static void scNotifyRetry(Check &c) {
     Rig r;
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     r.p.refuseFrom = r.p.t;                       // READY refused for 50 ms
     r.p.refuseTo = r.p.t + 50;
     a.begin();
@@ -1161,7 +1237,7 @@ static void scNotifyRetry(Check &c) {
     c.expect(a.send(1), "ACK delivered on the 4th try");
     r.p.refuseFrom = r.p.t;                       // a 2 ms hiccup every 64 ms for the rest of the transfer
     r.p.refuseTo = r.p.t + 2;
-    while (a.at < g_doc.bytes.size()) {
+    while (a.at < g_docTagged.bytes.size()) {
         if (r.p.t % 64 == 0) { r.p.refuseFrom = r.p.t; r.p.refuseTo = r.p.t + 2; }
         a.sendWindow();
         if (!a.ack()) { c.expect(false, "an ACK lost"); break; }
@@ -1207,7 +1283,7 @@ static void scOutboxPerLink(Check &c) {
     Rig r;
     r.p.links.push_back(Fake::Link{2, true, 255, true});   // connected, but takes no notification
     r.control(2, Bytes(1, ota::OP_ABORT));                  // its 84 waits in the outbox
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     r.p.refuseNext = 1;                                     // the owner's READY queues behind it once
     c.expect(a.full(), "the owner's update completes while another link's reply is stuck");
     r.p.links[1].refusing = false;
@@ -1264,7 +1340,7 @@ static void scWrap(Check &c) {
 
 static void scWindow1(Check &c) {
     Rig r;
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     c.expect(a.full(1), "transfer completes");
     outcome(c, r, cat(cat(L({"81 FA 00 01"}), acksFor(kDocSize, 250, 1)), L({"82", "83 DC 05"})), ota::REBOOTING, 1, 0);
     c.summary = "READY 81 FA 00 01 · an ACK after every one of 3,965 frames · 83 DC 05";
@@ -1272,7 +1348,7 @@ static void scWindow1(Check &c) {
 
 static void scWindow32(Check &c) {
     Rig r;
-    App a(r, g_doc);
+    App a(r, g_docTagged);
     c.expect(a.full(32), "transfer completes");
     std::vector<std::string> acks = acksFor(kDocSize, 250, 32);
     c.expect(acks.size() == 124 && acks[122] == "85 C0 03 0F 00", "123 full windows (984,000 bytes), then 29 frames");
@@ -1315,12 +1391,12 @@ static void scIgnored(Check &c) {
 
 static void scSecondSession(Check &c) {
     Rig r;
-    Image bent = g_doc;
+    Image bent = g_docTagged;
     bent.bytes[1234] ^= 0x80;
-    memcpy(bent.sha, g_doc.sha, 32);
+    memcpy(bent.sha, g_docTagged.sha, 32);
     App a(r, bent);
     c.expect(!a.full(), "first session: E1 05");
-    App b(r, g_doc);
+    App b(r, g_docTagged);
     b.cursor = r.p.sent.size();
     c.expect(b.full(), "second session from the same connection completes");
     c.expect(r.p.enter == 2 && r.p.leave == 1 && r.p.fAbort == 1 && r.p.shaStarts == 2 && r.p.activated == 1, "fresh hash, one activation");
@@ -1328,11 +1404,186 @@ static void scSecondSession(Check &c) {
     c.summary = "after an E1 05 the next BEGIN starts clean and completes: 83 DC 05";
 }
 
+// ---- 2.1.0: the lock (ERR 11) and updates that never go backwards (ERR 12) --
+
+static void scErr11NotAuthorised(Check &c) {
+    Rig r;
+    r.p.untrusted.push_back(1);                  // the lock does not trust conn 1
+    App a(r, g_small);
+    a.begin();
+    r.ticks(100);
+    c.expect(r.p.authCalls == 1, "asked once, at BEGIN");
+    c.expect(r.p.sigCalls == 0 && r.p.fBegin == 0, "no signature check, slot never opened");
+    outcome(c, r, L({"E1 0B"}), ota::IDLE, 0, 0);
+    r.control(1, Bytes(1, ota::OP_ABORT));       // the idle answers stay open to everyone
+    c.expect(r.p.heard(1) == L({"E1 0B", "84"}), "ABORT while idle still answered 84");
+    r.p.links.push_back(Fake::Link{2, true, 255, false});
+    App b(r, g_small, 2);                        // a trusted connection updates as before
+    c.expect(b.full(), "conn 2 (trusted) completes");
+    c.expect(r.p.heard(2) == L({"81 FA 00 10", "85 A0 0F 00 00", "82", "83 DC 05"}), "conn 2 heard READY … OK");
+    invariants(c, r);
+    c.summary = "untrusted BEGIN: E1 0B, enterUpdateMode() never called, nothing checked or opened · a trusted conn then completes";
+}
+
+static void scErr12BeginNotNewer(Check &c) {
+    struct Case { const char *running, *begin, *want; };
+    const Case cases[] = {
+        {"2.0.2", "2.0.2", "E1 0C"},             // equal
+        {"2.0.2", "2.0.1", "E1 0C"},             // older
+        {"2.0.2", "1.9.9", "E1 0C"},
+        {"2.1.0", "2.1.0", "E1 0C"},             // a 2.1.0 piano offered 2.1.0 again
+        {"2.1.0", "2.1.0+abc1234", "E1 0C"},     // the build suffix is not a version
+        {"2.1.0", "2.1.0-rc.2", "E1 0C"},
+        {"2.1.0", "2.0.2", "E1 0C"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        Rig r;
+        r.p.running = cases[i].running;
+        r.control(1, beginFor(g_small, 16, cases[i].begin));
+        r.ticks(10);
+        c.expect(r.p.heard(1) == L({cases[i].want}), std::string("running ") + cases[i].running + ", BEGIN " + cases[i].begin +
+                 ": heard " + join(r.p.heard(1)));
+        c.expect(r.p.sigCalls == 0 && r.p.enter == 0, std::string("BEGIN ") + cases[i].begin + ": nothing stopped, no signature check");
+        invariants(c, r);
+    }
+    Rig rn;                                      // numeric, not text: 2.0.10 is newer than 2.0.2
+    rn.control(1, beginFor(g_small, 16, "2.0.10"));
+    c.expect(rn.s.state() == ota::PREPARING, "BEGIN 2.0.10 on 2.0.2: accepted");
+    c.summary = "BEGIN equal (2.0.2, 2.1.0, 2.1.0+build, 2.1.0-rc.2) or older (2.0.1, 1.9.9, 2.0.2 on 2.1.0): E1 0C, music untouched · 2.0.10 > 2.0.2";
+}
+
+// A full transfer of `im` (BEGIN says `begin`) that must end 82, E1 0C after END.
+static void refusedAfterEnd(Check &c, const Image &im, const char *what, const char *running = "2.0.2",
+                            const char *begin = "2.1.0") {
+    Rig r;
+    r.p.running = running;
+    App a(r, im);
+    c.expect(!a.full(16, 0, begin), std::string(what) + ": the transfer runs to END");
+    c.expect(r.p.sigCalls == 2, std::string(what) + ": hash and signature checked first");
+    c.expect(r.p.fEnd == 0 && r.p.activated == 0, std::string(what) + ": slot never activated");
+    r.ticks(2000);
+    c.expect(r.p.restarts == 0, std::string(what) + ": no restart");
+    outcome(c, r, L({"81 FA 00 10", "85 A0 0F 00 00", "82", "E1 0C"}), ota::IDLE, 1, 1);
+}
+
+static void scErr12AfterEnd(Check &c) {
+    refusedAfterEnd(c, patternImage(4000), "no tag");
+    refusedAfterEnd(c, makeImage(4000, "2.0.2"), "tag equal (2.0.2)");
+    refusedAfterEnd(c, makeImage(4000, "2.0.1"), "tag older (2.0.1)");
+    // BEGIN claims 2.1.1 (unsigned, so it passes the early check); the signed tag decides.
+    refusedAfterEnd(c, makeImage(4000, "2.1.0"), "tag 2.1.0 on a 2.1.0 piano, BEGIN says 2.1.1", "2.1.0", "2.1.1");
+    refusedAfterEnd(c, makeImage(4000, "2.1.0-rc.9"), "tag 2.1.0-rc.9 on a 2.1.0 piano, BEGIN says 2.1.1", "2.1.0", "2.1.1");
+    Bytes bad = tagBytes("2.1.0");
+    bad.insert(bad.end() - 1, '_');              // "…2.1.0_" then NUL: a foreign character
+    refusedAfterEnd(c, patternImage(4000, bad, 1000), "malformed tag (2.1.0_)");
+    Bytes longTag = tagBytes("2.1.0-0123456789a");   // 17 characters before the NUL
+    refusedAfterEnd(c, patternImage(4000, longTag, 1000), "17-character tag version");
+    Bytes empty = tagBytes("");
+    refusedAfterEnd(c, patternImage(4000, empty, 1000), "empty tag version");
+    c.summary = "no tag · tag equal · tag older · equal on 2.1.0 under a BEGIN saying 2.1.1 · rc of the running version · malformed · 17 chars · empty: 82, E1 0C after the signature, never activated";
+}
+
+static void scTagSplit(Check &c) {
+    // The 12 bytes "SJPV1:2.1.0" + NUL, starting at 250 - k: frame 0 ends
+    // after the k-th tag byte (k = 12: the tag ends exactly at the boundary).
+    for (size_t k = 1; k <= 12; k++) {
+        Image im = patternImage(4000, tagBytes("2.1.0"), 250 - k);
+        Rig r;
+        App a(r, im);
+        c.expect(a.full(), "split after tag byte " + std::to_string(k) + ": OK");
+        invariants(c, r);
+    }
+    Rig r23;                                     // MTU 23: 18-byte frames, the tag over three of them
+    r23.p.links[0].mtu = 23;
+    Image im = patternImage(4000, tagBytes("2.1.0-0123456789"), 17);
+    App a23(r23, im);
+    c.expect(a23.full(), "MTU 23, a 23-byte tag over frames 0, 1 and 2: OK");
+    c.expect(r23.p.version == "2.1.0", "(onActivated reports BEGIN's version)");
+    invariants(c, r23);
+    c.summary = "tag split after each of its 12 bytes across Data 0/1: OK every time · over 3 frames at MTU 23: OK";
+}
+
+static void scTagDecoy(Check &c) {
+    // The scanner's own table, written into an image: never mistaken for the tag.
+    Bytes decoy;
+    const char *shifted = "TKQW2;";              // each marker byte + 1
+    for (const char *q = shifted; *q; q++) decoy.push_back((uint8_t)*q);
+    const char *v = "2.1.0";
+    for (const char *q = v; *q; q++) decoy.push_back((uint8_t)*q);
+    decoy.push_back(0);
+    refusedAfterEnd(c, patternImage(4000, decoy, 1000), "decoy only");
+
+    Image both = patternImage(4000, decoy, 500);   // decoy and a real tag: the tag counts
+    Bytes t = tagBytes("2.1.0");
+    for (size_t i = 0; i < t.size(); i++) both.bytes[2000 + i] = t[i];
+    reseal(both);
+    Rig r;
+    App a(r, both);
+    c.expect(a.full(), "decoy + real tag: OK");
+    invariants(c, r);
+
+    Bytes restart;                               // "SJPV" then a whole tag: the match restarts
+    const char *pre = "SJPVSJPV1:2.1.0";
+    for (const char *q = pre; *q; q++) restart.push_back((uint8_t)*q);
+    restart.push_back(0);
+    Rig r2;
+    const Image restartImage = patternImage(4000, restart, 1000);
+    App a2(r2, restartImage);
+    c.expect(a2.full(), "\"SJPV\" + a tag: OK");
+    invariants(c, r2);
+
+    Bytes nested;                                // a marker inside a broken candidate
+    const char *nest = "SJPV1:SJPV1:2.1.0";
+    for (const char *q = nest; *q; q++) nested.push_back((uint8_t)*q);
+    nested.push_back(0);
+    Rig r3;
+    const Image nestedImage = patternImage(4000, nested, 1000);
+    App a3(r3, nestedImage);
+    c.expect(a3.full(), "a marker inside a broken candidate: OK");
+    invariants(c, r3);
+
+    Image first = makeImage(4000, "2.0.1");      // two tags: the first well-formed one wins
+    Bytes newer = tagBytes("9.9.9");
+    for (size_t i = 0; i < newer.size(); i++) first.bytes[3000 + i] = newer[i];
+    reseal(first);
+    refusedAfterEnd(c, first, "older tag first, newer later");
+    c.summary = "the shifted table \"TKQW2;2.1.0\" alone: E1 0C · with a real tag: OK · \"SJPV\"+tag and a nested marker: OK · first tag wins";
+}
+
+static void scVersionCompare(Check &c) {
+    struct Case { const char *a, *b; bool newer; };
+    const Case cases[] = {
+        {"2.1.0", "2.0.2", true}, {"2.0.2", "2.1.0", false}, {"2.1.0", "2.1.0", false},
+        {"2.0.10", "2.0.9", true}, {"10.0.0", "9.9.9", true}, {"2.1.1+abc1234", "2.1.0", true},
+        {"2.1.0-rc.1", "2.1.0", false}, {"2.1.0", "2.1.0-rc.1", false}, {"3.0.0", "2.99.99", true},
+        {"2.1", "2.0.0", false}, {"v2.1.0", "2.0.0", false}, {"2.1.0.1", "2.0.0", false}, {"", "2.0.0", false},
+        {"2.1.0", "", false}, {"2.1.0", "x", false}, {"1234567890.0.0", "1.0.0", false}, {"999999999.0.0", "1.0.0", true},
+        {"02.1.0", "2.0.9", true}, {"2..0", "1.0.0", false}, {"2.1.0 ", "2.0.0", false},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        bool got = ota::versionNewer(cases[i].a, cases[i].b);
+        c.expect(got == cases[i].newer, std::string("versionNewer(\"") + cases[i].a + "\", \"" + cases[i].b + "\") = " + (got ? "true" : "false"));
+    }
+    c.expect(!ota::versionNewer(NULL, "2.0.0") && !ota::versionNewer("2.1.0", NULL), "NULL: not newer");
+
+    ota::VersionTagScanner sc;                   // byte by byte, then reset
+    Bytes t = tagBytes("2.1.0");
+    for (size_t i = 0; i < t.size(); i++) sc.feed(&t[i], 1);
+    c.expect(sc.found() && std::string(sc.version()) == "2.1.0", "fed one byte at a time: found 2.1.0");
+    sc.reset();
+    c.expect(!sc.found() && std::string(sc.version()).empty(), "reset forgets it");
+    Bytes cut(t.begin(), t.end() - 1);           // no NUL yet: not found
+    sc.feed(cut.data(), cut.size());
+    c.expect(!sc.found(), "no NUL yet: not found");
+    c.summary = std::to_string(sizeof cases / sizeof cases[0]) + " version pairs (numeric, suffix ignored, unparseable = not newer) · scanner byte by byte, reset";
+}
+
 // ---- driver ----------------------------------------------------------------
 struct Scenario { const char *name; void (*fn)(Check &); };
 static const Scenario kScenarios[] = {
     {"sha256_selftest", scSha},
     {"worked_example", scWorkedExample},
+    {"worked_example_tagged", scWorkedExampleTagged},
     {"err1_not_verified", scErr1NotVerified},
     {"err1_not_quiet", scErr1NotQuiet},
     {"err2_too_large", scErr2TooLarge},
@@ -1384,10 +1635,39 @@ static const Scenario kScenarios[] = {
     {"partial_last_window", scPartialLastWindow},
     {"ignored_frames", scIgnored},
     {"second_session", scSecondSession},
+    {"err11_not_authorised", scErr11NotAuthorised},
+    {"err12_begin_not_newer", scErr12BeginNotNewer},
+    {"err12_after_end", scErr12AfterEnd},
+    {"tag_split_frames", scTagSplit},
+    {"tag_decoy", scTagDecoy},
+    {"version_compare", scVersionCompare},
 };
 
+// --scan <file>: what the session's scanner finds in a file fed in 250-byte
+// frames (as over Bluetooth), and how many times the marker occurs at all.
+static int scanFile(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", path); return 2; }
+    Bytes b;
+    uint8_t buf[4096];
+    size_t got;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0) b.insert(b.end(), buf, buf + got);
+    fclose(f);
+    ota::VersionTagScanner sc;
+    for (size_t at = 0; at < b.size(); at += 250) sc.feed(&b[at], b.size() - at < 250 ? b.size() - at : 250);
+    const std::string marker = "SJPV1:";
+    int occurrences = 0;
+    for (size_t i = 0; i + marker.size() <= b.size(); i++)
+        if (memcmp(&b[i], marker.data(), marker.size()) == 0) occurrences++;
+    printf("%s: %zu bytes, marker occurs %d time(s), version tag %s%s\n", path, b.size(), occurrences,
+           sc.found() ? "found: " : "NOT found", sc.found() ? sc.version() : "");
+    return sc.found() ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
-    g_doc = makeImage(kDocSize);
+    if (argc == 3 && strcmp(argv[1], "--scan") == 0) return scanFile(argv[2]);
+    g_doc = docImage();
+    g_docTagged = makeImage(kDocSize);
     g_small = makeImage(4000);
     const size_t n = sizeof kScenarios / sizeof kScenarios[0];
     int run = 0, failed = 0;
