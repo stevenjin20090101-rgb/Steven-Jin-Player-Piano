@@ -166,10 +166,14 @@ extern uint32_t g_releaseMs;     // cushion duration before cut to 0
 // iteration alongside tickAutoRelease().
 void tickPendingFires();
 
-// Probes every connected PCA9685 every few seconds. If a chip stops
-// ack'ing (e.g. it browned out from EMI / power supply ripple caused by
-// PWM switching of the solenoid coils), re-runs begin() to recover it.
-// Logs everything to Serial. Call from the main loop.
+// Board health on two cadences. Every 5 s, probes each online PCA9685:
+// a chip that answers a second probe is re-inited with begin() (it glitched,
+// e.g. browned out from EMI / supply ripple under PWM switching); one that
+// misses both is marked offline without a begin(). Every 1 s, re-probes the
+// offline boards — their 24 V rail sits on a smart plug that is off whenever
+// nothing plays (docs/SMART_PLUG.md) — hammers a verified all-off at any that
+// still has a coil believed on, and brings back those that answer. Logs the
+// transitions to Serial. Call from the main loop.
 void tickChipHealth();
 
 // Manually fire a single channel on a single board, bypassing all MIDI

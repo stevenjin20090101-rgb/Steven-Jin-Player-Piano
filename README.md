@@ -79,7 +79,7 @@ DIP switch sets PCA9685 address bits A0–A2 (A3–A5 off). Boards are 0x40 (oct
 - Bounded hold: no coil can be energized longer than the clamped hold timeout (≤ 4 s) through **any** code path.
 - Hardware watchdog (8 s) + boot-reason logging + crash-loop safe mode + triple all-off broadcast at every boot.
 - **Hot-reconnect**: power boards that are missing/dropped are re-probed every 1 s and come back online automatically; online boards are health-checked every 5 s.
-- I²C fault counter, per-transaction 5 ms timeout, rate-limited bus recovery — an EMI glitch storm degrades gracefully instead of freezing playback.
+- I²C fault counter, a 5 ms transaction timeout for the failures the controller reports (a hung transaction still waits about 1 s in this IDF build), rate-limited bus recovery — an EMI glitch storm degrades gracefully instead of freezing playback.
 - All settings persist in NVS flash and survive power-off and re-flash.
 
 **Comfort**
@@ -158,7 +158,7 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 
 | Symptom | Likely cause / fix |
 |---|---|
-| BLE receives but piano silent, boards `MISSING` | Power-board side unpowered, trunk unplugged, or `BOARD_REV` mismatch. Boards auto-join within 5 s of power returning. |
+| BLE receives but piano silent, boards `MISSING` | Power-board side unpowered, trunk unplugged, or `BOARD_REV` mismatch. Boards auto-join within about 1 s of power returning. |
 | Crashes only in PWM mode under heavy songs | Solenoid switching EMI — use Full-Power mode; the permanent fix is the opto-isolated board + flyback diodes/filtering. |
 | USB port not appearing on the computer | Use a known **data** cable, then BOOT+RST into download mode. |
 | A key stuck pressed | Should self-release ≤ hold timeout (2 s default). If ever not: EMERGENCY STOP in the GUI / `panic` / pull the 24 V XT60. Persistent single-channel stick = that channel's driver hardware. |

@@ -105,7 +105,9 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 2. **Rail-up.** ARM, then CHECK every 500 ms until every one of the seven boards reads OK — up to 10 s. With
    firmware 2.1.0 the boards answer within about 1 s of the PSU coming up; with 2.0.1 up to 5 s. The set of
    OK boards is the **baseline** for this rail-up (fewer than seven with the rail up is a trunk fault:
-   show it). Only then send notes.
+   show it). Only then send notes. If the boards never read MISSING with the rail off — the trunk side of the
+   isolator fed from the controller, not from the rail — the wait is a fixed 1.5 s after ARM for the PSU to come
+   up instead; the bench says which (the System page with the rail off).
 3. **While power is wanted:** every 10 s, CHECK first, then ARM only if the piano answered and every
    baseline board is still OK. **Never ARM from a timer that did not just see a good CHECK.** Two failed
    CHECKs in a row → stop playback, CUT (best effort), show "The piano stopped answering — 24 V cut".
@@ -151,7 +153,9 @@ promised. If Steven chooses (a), rule 3 carries this exception the way rule 6 ca
   that has no power; `!i2cfails` keeps meaning bus trouble, not a rail that is simply off.
 - A cut mid-note: the coils lose their supply; the firmware's model keeps believing them on until a verified
   OFF, which cannot land while the chip is unpowered — `!active` may stay above 0 and the hold watchdog may
-  count trips until the boards return and `begin()` verifies every channel off. Expected, not a fault.
+  count trips until the boards return and `begin()` verifies every channel off. In that state `!i2cfails`
+  climbs (an all-off that never landed *is* bus trouble) and the USB log repeats the bus-recovery line once a
+  second. It arises only when a stop failed before the cut — never in the normal stop-then-cut.
 - Nothing else changes. Every layer of `SAFETY.md` stays; the update self-test keeps needing a board online.
 - Not added: a "rail off" hint command. The firmware does not need to know *why* boards are gone, and the
   screen shows nothing for missing boards.
@@ -171,6 +175,9 @@ promised. If Steven chooses (a), rule 3 carries this exception the way rule 6 ca
    stays off.
 9. Power-cycle the plug with no known Wi-Fi in range: `provision` still reads `complete`, and the tablet
    ARMs over its bond — the setup survives offline. (If it reads `locked`, the setup section is wrong: fix it.)
+10. With the rail off, `get loopms` over USB stays in single-digit milliseconds: an unpowered trunk must NACK
+    the probes, not hang the bus — a hung transaction waits about 1 s in this IDF build, and seven of them a
+    second would starve `loop()`. If it hangs, the fix is to probe one board and skip the rest when it hangs.
 
 ## Residual risks, stated once
 

@@ -362,7 +362,7 @@ reconnect ≤ 60 s, read 0x2A26 ► "2.1.0+a1b2c3d"             ≥ 30 s + a boa
   `loop()`'s `ui_lock` block; the session counts as activity for the idle dimmer (`main.cpp:1621–1629`),
   and so do the outcome texts of §9 while they show.
 - **The safety ticks keep their cadence** — `tickAutoRelease()`, `tickPendingFires()`,
-  `tickRestrike()` at ~100 Hz, `tickChipHealth()` every 5 s, the watchdog fed every pass. The OTA
+  `tickRestrike()` at ~100 Hz, `tickChipHealth()` every 1 s for missing boards and every 5 s for online ones, the watchdog fed every pass. The OTA
   code must yield after its bounded work (§4) so they do: no loops or waits inside a pass (the
   1 s verified-OFF wait spans passes).
 - **Crash safe mode:** keep the count that `main.cpp:1316` discards —
