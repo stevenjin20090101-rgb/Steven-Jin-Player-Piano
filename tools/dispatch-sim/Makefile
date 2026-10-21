@@ -3,7 +3,7 @@ FW        := ../..
 CXX       ?= c++
 CXXFLAGS  := -std=gnu++17 -O0 -g -Wall -Wno-unused-function -Wno-unused-variable -Istubs -I$(FW)/include
 SCENARIOS := rapid rapid_snappy rapid_failoff grace short_repeat case1_gap manual_refire rearticulate long_note orphan \
-             inhibit verified_off verified_off_pending sweep
+             inhibit verified_off verified_off_pending sweep health_reprobe
 
 sim: sim.cpp $(FW)/src/power_boards.cpp $(FW)/include/power_boards.h $(FW)/include/pca9685.h $(FW)/include/config.h $(wildcard stubs/*.h stubs/freertos/*.h)
 	$(CXX) $(CXXFLAGS) sim.cpp $(FW)/src/power_boards.cpp -o $@

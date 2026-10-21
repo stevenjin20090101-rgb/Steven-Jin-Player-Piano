@@ -52,12 +52,20 @@ And the bring-up sweep (SAFETY.md rule 3):
   while any of them is on. The sweep keeps its timing: one strike per key,
   150 ms on, 80 ms off.
 
+And the power-board health tick (SAFETY.md rule 5, [`docs/SMART_PLUG.md`](../../docs/SMART_PLUG.md)):
+
+- `health_reprobe` — board 3's chip stops answering (its 24 V rail off) while a
+  coil is believed on. The 5 s check marks it offline at once, without a
+  `begin()` (`g_i2cFailCount` unchanged), its coil still owed a verified OFF;
+  the 1 s re-probe tries a verified all-off while it is gone and brings it
+  back, verified all off, within 1.1 s of it answering again.
+
 Every scenario also asks `coilsVerifiedOff()` on every simulated millisecond
 (inside the sweep too, where no safety tick runs) and fails if it ever says
 "all off" while a simulated channel is on.
 
 Limits: a perfectly regular tick, chips that always answer (an offline board is
-its `connected` flag cleared), and a fault model that can only fail OFF writes,
-in up to two time windows (it also counts every non-zero write). The
-original ten scenarios watch one note (C4 / board 3 / channel 0). It exercises
-the state machine, not the I²C layer.
+its `connected` flag cleared; only `health_reprobe` silences one), and a fault
+model that can only fail OFF writes, in up to two time windows (it also counts
+every non-zero write). The original ten scenarios watch one note (C4 / board 3 /
+channel 0). It exercises the state machine, not the I²C layer.

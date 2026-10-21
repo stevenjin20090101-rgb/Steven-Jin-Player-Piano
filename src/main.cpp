@@ -2281,9 +2281,12 @@ void loop() {
     // (auto-release + pending-fire ticks now run at the TOP of loop() so a
     // note flood can never delay the safety net — see lastSafetyTick above.)
 
-    // Health check: every 5 s, re-init any PCA9685 that's stopped acking.
-    // Cheap (just an I²C address probe per board) and self-healing if
-    // EMI from heavy PWM activity ever browns a chip out.
+    // Board health: every 5 s, check the online PCA9685s still ACK (re-init
+    // a glitched one, mark a vanished one offline); every 1 s, re-probe the
+    // offline ones and bring back any that answer — the smart plug switches
+    // their 24 V rail off whenever nothing plays. Cheap (an I²C address probe
+    // per board) and self-healing if EMI from heavy PWM activity ever browns
+    // a chip out.
     if (!i2c_wave_active()) tickChipHealth();   // not while the signal test holds the bus
 
     // Drain anything typed in the serial console (PWM tuning commands).

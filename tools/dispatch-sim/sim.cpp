@@ -17,7 +17,8 @@
 // check SAFETY.md rule 9's hooks instead: no energize gets through the inhibit,
 // and coilsVerifiedOff() is true only when nothing is on or about to be. The
 // sweep scenario checks the bring-up sweep against rule 3: armed strikes,
-// verified releases, failed OFFs retried.
+// verified releases, failed OFFs retried. health_reprobe checks the health tick
+// against rule 5 with a chip that stops answering (docs/SMART_PLUG.md).
 //
 //   make check          run every scenario, fail on any ceiling violation
 //   SIM_VERBOSE=1 ./sim grace     print the event/coil timeline of one scenario
@@ -63,6 +64,13 @@ static uint32_t g_failOff2From = 1, g_failOff2To = 0;
 static bool offWriteFails() {
     return (g_now >= g_failOffFrom && g_now < g_failOffTo) || (g_now >= g_failOff2From && g_now < g_failOff2To);
 }
+// A chip that stops answering (its 24 V rail off on the smart plug, docs/SMART_PLUG.md):
+// it NACKs everything, an address probe included. As in the real driver, each failed
+// write counts in g_i2cFailCount and a probe counts nothing. Its outputs are left as
+// they were, the conservative reading (a powered chip on a broken trunk keeps driving).
+static uint8_t g_deadAddr = 0;      // 0 = every chip answers
+static int     g_deadAllOffs = 0;   // per-chip all-offs it NACKed
+static bool deadChip(uint8_t a) { return a == g_deadAddr; }
 // Every setPWM() asked to drive a non-zero value, landed or not — an energize attempt.
 static int g_nonZeroWrites = 0;
 static void setChannel(SimChip& c, int ch, uint16_t v) {
@@ -78,25 +86,27 @@ size_t  TwoWire::write(uint8_t b) { s_txBuf.push_back(b); return 1; }
 uint8_t TwoWire::endTransmission() {
     if (s_txAddr == 0x70 && !s_txBuf.empty() && s_txBuf[0] == 0xFA) {      // ALLCALL FULL_OFF burst
         if (offWriteFails()) return 4;
-        for (int i = 0; i < g_nChips; i++) for (int ch = 0; ch < 16; ch++) setChannel(g_chips[i], ch, 0);
+        for (int i = 0; i < g_nChips; i++) if (!deadChip(g_chips[i].addr)) for (int ch = 0; ch < 16; ch++) setChannel(g_chips[i], ch, 0);
     }
     return 0;
 }
 bool PCA9685::begin() {
     SimChip* c = chipFor(_addr);
     if (!c) { c = &g_chips[g_nChips++]; memset(c, 0, sizeof(*c)); c->addr = _addr; }
+    if (deadChip(_addr)) { g_i2cFailCount++; return false; }   // its first write NACKed
     for (int ch = 0; ch < 16; ch++) setChannel(*c, ch, 0);
     return true;
 }
-bool PCA9685::isConnected() { return true; }
+bool PCA9685::isConnected() { return !deadChip(_addr); }
 bool PCA9685::setPWM(uint8_t channel, uint16_t value) {
     if (value != 0) g_nonZeroWrites++;
     SimChip* c = chipFor(_addr); if (!c || channel >= 16) return false;
+    if (deadChip(_addr)) { g_i2cFailCount++; return false; }
     if (value == 0 && offWriteFails()) { g_i2cFailCount++; return false; }   // failed OFF: coil stays as it was
     setChannel(*c, channel, value >= 4095 ? 4096 : value);
     return true;
 }
-bool PCA9685::allOff() { SimChip* c = chipFor(_addr); if (!c) return false; if (offWriteFails()) return false; for (int ch = 0; ch < 16; ch++) setChannel(*c, ch, 0); return true; }
+bool PCA9685::allOff() { SimChip* c = chipFor(_addr); if (!c) return false; if (deadChip(_addr)) { g_deadAllOffs++; g_i2cFailCount++; return false; } if (offWriteFails()) return false; for (int ch = 0; ch < 16; ch++) setChannel(*c, ch, 0); return true; }
 bool PCA9685::setPWMFrequency(uint16_t) { return true; }
 bool PCA9685::writeReg(uint8_t, uint8_t) { return true; }
 bool PCA9685::writeBurst(uint8_t, const uint8_t*, uint8_t) { return true; }
@@ -281,7 +291,7 @@ static int scenarioVerifiedOff() {
     allKeysOff();
     expect(!coilsVerifiedOff(), "an offline board's believed-on coil keeps it false after the stop");
     at(3990); expect(!coilsVerifiedOff(), "still false: nothing verified that chip");
-    at(4000); tickChipHealth();               // its 5 s slot: verified per-chip all-off, then rejoin
+    at(4000); tickChipHealth();               // its re-probe slot: verified per-chip all-off, then rejoin
     expect(powerBoards[4].connected && coilsVerifiedOff(), "true once that chip's all-off is verified");
 
     char s[200];
@@ -386,6 +396,38 @@ static int scenarioSweep() {
     return hookResult("sweep", s);
 }
 
+// The 24 V rail on the smart plug (SAFETY.md rule 5, docs/SMART_PLUG.md): board 3's chip
+// stops answering with a coil believed on. The 5 s check must mark it offline at once,
+// the coil still owed a verified OFF, without a begin() on a chip that has no power
+// (g_i2cFailCount keeps meaning bus trouble); the 1 s re-probe hammers it and brings it
+// back, verified all off, within about a second of it answering. tickChipHealth() runs
+// every simulated ms, as on every loop() pass.
+static int scenarioHealthReprobe() {
+    uint32_t markedAt = 0, backAt = 0, markFails = 0;
+    bool owed = true;
+    for (uint32_t t = 0; t <= 12000; t++) {
+        at(t);
+        if (t == 8500)  manualFire(3, 0, 4096);   // C4's coil believed on (hold deadline +10500)
+        if (t == 8800)  g_deadAddr = 0x43;        // the rail drops
+        if (t == 10001) g_deadAddr = 0;           // back, 1 ms after a re-probe slot
+        const uint32_t fails0 = g_i2cFailCount;
+        tickChipHealth();
+        if (!markedAt && !powerBoards[3].connected) { markedAt = t; markFails = g_i2cFailCount - fails0; }
+        if (markedAt && !backAt && powerBoards[3].connected) backAt = t;
+        if (markedAt && !backAt && (coilsVerifiedOff() || coilsEnergizedCount() != 1)) owed = false;
+    }
+    expect(markedAt == 9000, "marked offline by the first 5 s check after the chip went quiet");
+    expect(markFails == 0, "marking it offline counted no I2C failure: no begin() on a chip without power");
+    expect(owed, "while offline its coil stays believed on, owed a verified OFF");
+    expect(g_deadAllOffs == 1, "the 1 s re-probe tried its verified all-off while it was gone");
+    expect(backAt && backAt - 10001 <= 1100, "online within 1.1 s of the chip answering again");
+    expect(coilsVerifiedOff() && coilsEnergizedCount() == 0 && !anyChannelOn(), "back with its channel model clear");
+    char s[200];
+    snprintf(s, sizeof s, "chip quiet +8800, coil on: offline +%u (i2cfails +%u)  answering +10001: online +%u (%u ms)  all-offs NACKed=%d",
+             markedAt, markFails, backAt, backAt ? backAt - 10001 : 0, g_deadAllOffs);
+    return hookResult("health_reprobe", s);
+}
+
 int main(int argc, char** argv) {
     std::string sc = argc > 1 ? argv[1] : "rapid";
     initPowerBoards();
@@ -430,6 +472,8 @@ int main(int argc, char** argv) {
         return scenarioVerifiedOffPending();
     } else if (sc == "sweep") {          // the bring-up sweep: armed strikes, verified releases
         return scenarioSweep();
+    } else if (sc == "health_reprobe") { // a board off the bus: offline at once, back within ~1 s
+        return scenarioHealthReprobe();
     }
     fprintf(stderr, "unknown scenario '%s'\n", sc.c_str());
     return 2;

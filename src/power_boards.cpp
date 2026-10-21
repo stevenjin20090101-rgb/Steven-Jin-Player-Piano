@@ -702,26 +702,36 @@ bool dispatchNoteOff(uint8_t midi_note) {
     return fireNoteOffNow(midi_note);
 }
 
-// Probes each PCA9685 every few seconds and re-initializes any that have
-// stopped responding. PWM switching of high-current solenoid coils can
-// inject enough noise on the shared I²C bus / 5V rail to glitch a chip's
+// Watches the power boards on two cadences. A board that is OFF the bus is
+// re-probed every second: the boards are powered from the 24 V rail, which
+// sits on a smart plug that is off whenever nothing plays (docs/SMART_PLUG.md),
+// so all seven vanish and come back routinely, and the app waits for every
+// one of them before its first note — this re-probe is that wait. A board ON
+// the bus is checked every 5 s: PWM switching of high-current solenoid coils
+// can inject enough noise on the shared I²C bus / 5V rail to glitch a chip's
 // state machine. Without recovery, you'd notice notes silently dropping
 // from one board until you reboot.
 void tickChipHealth() {
-    static uint32_t s_lastMs = 0;
-    constexpr uint32_t kPeriodMs = 5000;
+    static uint32_t s_lastReprobeMs     = 0;
+    static uint32_t s_lastOnlineCheckMs = 0;
+    constexpr uint32_t kReprobeMs     = 1000;   // boards off the bus
+    constexpr uint32_t kOnlineCheckMs = 5000;   // boards on the bus
     uint32_t now = millis();
-    if (now - s_lastMs < kPeriodMs) return;
-    s_lastMs = now;
+    const bool reprobeDue     = (now - s_lastReprobeMs >= kReprobeMs);
+    const bool onlineCheckDue = (now - s_lastOnlineCheckMs >= kOnlineCheckMs);
+    if (!reprobeDue && !onlineCheckDue) return;
+    if (reprobeDue)     s_lastReprobeMs     = now;
+    if (onlineCheckDue) s_lastOnlineCheckMs = now;
 
     for (int i = 0; i < kNumPowerBoards; i++) {
         auto& b = powerBoards[i];
 
         if (!b.connected) {
+            if (!reprobeDue) continue;
             // OFFLINE BOARD WITH A BELIEVED-ON COIL: the chip dropped off
             // the bus while (we think) driving a solenoid. It's outside
             // every normal release mechanism (per-channel retries need an
-            // ACKing chip), so this 5 s tick is its only software bound —
+            // ACKing chip), so this 1 s re-probe is its only software bound —
             // keep hammering: force a bus recovery, try a per-chip verified
             // all-off, and fire the ALLCALL as a broadside. Only a VERIFIED
             // per-chip all-off (or the begin() below) clears its model.
@@ -741,10 +751,11 @@ void tickChipHealth() {
             }
 
             // HOT-RECONNECT: re-probe boards that were missing at boot or
-            // dropped later. One cheap address ACK every 5 s; if the chip is
-            // back, run the full init (begin() = VERIFIED all channels OFF),
-            // sync the RAM model, and rejoin the active set. A board plugged
-            // in after power-up "just starts working" within 5 s.
+            // dropped later. One cheap address ACK every second; if the chip
+            // is back, run the full init (begin() = VERIFIED all channels
+            // OFF), sync the RAM model, and rejoin the active set. A board
+            // plugged in after power-up, or a rail the smart plug has just
+            // switched on, "just starts working" within about a second.
             if (b.chip.isConnected() && b.chip.begin()) {
                 b.chip.setPWMFrequency(g_pwmFreqHz);
                 for (uint8_t s = 0; s < 12; s++) { s_onAt[i][s] = 0; s_needOff[i][s] = false; }
@@ -755,8 +766,30 @@ void tickChipHealth() {
             continue;
         }
 
+        if (!onlineCheckDue) continue;
         if (b.chip.isConnected()) continue;  // still ACKing — good
 
+        // One missed ACK proves little; ask again at once.
+        if (!b.chip.isConnected()) {
+            // GONE, not glitched: most often its 24 V rail is simply off (the
+            // smart plug). Mark it offline now, with no begin(): a chip with
+            // no power cannot be re-inited, and begin()'s failed writes would
+            // count in g_i2cFailCount, which must keep meaning bus trouble,
+            // not a rail that is off. Its believed-on channels are physically
+            // indeterminate — flag them, as a failed re-init does below, so
+            // the 1 s re-probe keeps hammering a verified OFF and only a
+            // verified all-off or begin() clears them.
+            for (uint8_t s = 0; s < 12; s++) {
+                if (s_onAt[i][s] != 0) s_needOff[i][s] = true;
+            }
+            b.connected = false;
+            Serial.printf("[health] board %d (0x%02X) off the bus — marked offline, re-probing every 1 s\n",
+                          i, b.chip.address());
+            continue;
+        }
+
+        // It answered the second probe: a glitched chip, not a missing one —
+        // re-init it in place.
         Serial.printf("[health] board %d (0x%02X) NOT RESPONDING — re-initing\n",
                       i, b.chip.address());
         if (b.chip.begin()) {

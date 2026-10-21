@@ -78,7 +78,7 @@ DIP switch sets PCA9685 address bits A0–A2 (A3–A5 off). Boards are 0x40 (oct
 - Verified-release invariant: a solenoid is only ever considered "off" after a **confirmed** I²C write; failed releases retry at 100 Hz and escalate to a bus-wide broadcast.
 - Bounded hold: no coil can be energized longer than the clamped hold timeout (≤ 4 s) through **any** code path.
 - Hardware watchdog (8 s) + boot-reason logging + crash-loop safe mode + triple all-off broadcast at every boot.
-- **Hot-reconnect**: power boards that are missing/dropped are re-probed every 5 s and come back online automatically.
+- **Hot-reconnect**: power boards that are missing/dropped are re-probed every 1 s and come back online automatically; online boards are health-checked every 5 s.
 - I²C fault counter, per-transaction 5 ms timeout, rate-limited bus recovery — an EMI glitch storm degrades gracefully instead of freezing playback.
 - All settings persist in NVS flash and survive power-off and re-flash.
 

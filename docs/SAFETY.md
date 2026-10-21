@@ -64,10 +64,11 @@ never ignore those return values.
    enforces the same `g_maxHoldMs` bound itself from the *first* press
    (`heldSinceMs`, deliberately never reset by re-strikes or repeated NoteOns).
 5. **Offline boards stay armed.** A board that stops ACKing while a coil is
-   believed on keeps its flags; the 5 s health tick force-recovers the bus,
-   attempts a per-chip verified all-off, and only a **verified** all-off or a
-   verified re-init (`begin()`, which writes FULL_OFF *before* waking the
-   chip and checks it landed) clears that board's state.
+   believed on keeps its flags; the health tick re-probes it every 1 s,
+   force-recovers the bus, attempts a per-chip verified all-off, and only a
+   **verified** all-off or a verified re-init (`begin()`, which writes
+   FULL_OFF *before* waking the chip and checks it landed) clears that
+   board's state.
 6. **The safety ticks run before note dispatch** at the top of `loop()`,
    and the per-loop dispatch drain is capped — a flood of incoming notes can
    never starve the release watchdog.
