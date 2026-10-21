@@ -33,8 +33,9 @@ re-arm is at most 10 s before the fault, so 24 V stays on at most 10 + 30 s afte
 ## Hardware
 
 - **Shelly Plug US Gen4** (the UL Wi-Fi / Bluetooth / Zigbee / Matter plug from Steven's listing). Leave it in
-  its Wi-Fi/Bluetooth mode, never Zigbee mode. **Join it to no Wi-Fi network and no cloud:** it is driven over
-  Bluetooth only, and with no network nothing can change its firmware or settings under us.
+  its Wi-Fi/Bluetooth mode, never Zigbee mode. It is driven over Bluetooth only: it goes on a network **once**,
+  for the setup below (firmware update, provisioning), then forgets it — never the school Wi-Fi, no cloud — so
+  nothing can change its firmware or settings under us.
 - **Only the 24 V PSU goes on the plug.** The controller's own supply and the LED strip's 5 V supply stay on
   another outlet: the piano must keep its screen, Bluetooth, settings and console while the rail is off —
   that is the whole point. Label the plug: *PIANO 24 V — must stay on the smart plug*.
@@ -46,31 +47,51 @@ re-arm is at most 10 s before the fault, so 24 V stays on at most 10 + 30 s afte
   the network. On older firmware the plug still works, but anyone in range could switch the rail — harmless
   for safety (on = the controller holds every coil off; off = silence), not acceptable long-term.
 
-## One-time setup (Steven, with the app's "Pair the power plug" screen)
+## One-time setup (Steven: the Shelly app once, then the app's "Pair the power plug" screen)
 
-RPC over Bluetooth is the plug's JSON-RPC carried over a GATT service (the Mongoose OS RPC service:
-service `5f6d4f53-5f52-5043-5f53-56435f49445f`, data characteristic `…-5f64-6174615f5f5f`, TX control
-`…-5f74-785f63746c5f`, RX control `…-5f72-785f63746c5f`; the client writes the frame length as 4 bytes
-big-endian to TX control, writes the JSON frame to data in MTU-sized chunks, reads the response length from
-RX control, then reads data until it has it all). **The app session verifies these against the Shelly
-docs before coding** ("RPC over BLE"; the BLE component page documents `BLE.StartPairing`, the bond limit
-of 20, and that RPC over Bluetooth is encrypted and authenticated once the plug's provisioning state is
-`complete`; in `pending` / `confirmed` it answers without pairing, which is what makes first contact
-possible).
+RPC over Bluetooth is the plug's JSON-RPC carried over a GATT service — the Mongoose OS RPC service, verified
+by the app session against Shelly's and Mongoose OS's docs: service `5f6d4f53-5f52-5043-5f53-56435f49445f`;
+data `…-5f64-6174615f5f5f`; TX control `…-5f74-785f63746c5f`; RX control `…-5f72-785f63746c5f`. The client
+writes the frame length as 4 bytes big-endian to TX control (which drops any half-written frame: one frame in
+flight), writes the JSON frame to data in chunks, reads the reply's length from RX control (read/notify), then
+reads data until it has it all.
 
-1. Plug it in. A new plug is in provisioning state `pending`: it answers RPC over Bluetooth without pairing.
-2. The app connects to `ShellyPlugUSG4-…`, then:
-   - `Shelly.GetDeviceInfo` → record `id`, `model`, `ver` (firmware ≥ 2.0.0 wanted).
+**Provisioning states** (`Shelly.GetDeviceInfo` → `provision`, firmware ≥ 1.7.5): `pending` (new) →
+`confirmed` (once provisioned) → `complete` (about 5 minutes later). In `pending` and `confirmed` the plug
+answers RPC over Bluetooth without pairing; from `complete` on, pairing is enforced for every RPC over
+Bluetooth. **`locked`** is the trap: the setup window expired without the plug ever going online — the
+access point and RPC over Bluetooth shut down until a power cycle, and the tablet could never ARM. So the plug
+goes on a network once, reaches `complete`, and only then forgets the network. Two timings follow from this
+and are confirmed on the bench (check 9): the tablet must bond **before** `complete` (unpaired RPC is refused
+after it), and the plug must reach `complete` **before** its setup window runs out.
+
+1. Plug it in. With the **Shelly app on Steven's phone**, add it to a phone hotspot that has internet,
+   decline the cloud (or turn it off afterwards), and let it update its firmware (≥ 2.0.0 for pairing).
+2. Straight after, from the Steven Piano app's **Pair the power plug** screen, over Bluetooth, while the
+   state is still `confirmed`:
+   - `Shelly.GetDeviceInfo` → record `id`, `model`, `ver`, `provision`.
    - `Switch.SetConfig {id:0, config:{name:"Piano 24 V", initial_state:"off", auto_on:false,
-     auto_off:false, in_mode:"detached", in_locked:true}}` — a mains blip leaves the rail off; the
-     plug's own button cannot turn the rail on and leave it on (if the model rejects `in_mode`, `in_locked`
-     alone does it).
+     auto_off:false, in_mode:"detached", in_locked:true}}` — a mains blip leaves the rail off; the plug's own
+     button cannot turn the rail on and leave it on (if the model rejects `in_mode`, `in_locked` alone does it).
    - `BLE.SetConfig {config:{rpc:{enable:true}}}` (restart if the reply says `restart_required`).
    - `BLE.StartPairing {timeout:180}`, then bond from Android (Just Works); `BLE.ListPairedDevices` shows
-     the tablet. Finish the plug's provisioning so its state is `complete` (the BLE page's "Provisioning
-     Integration" section says how; the app session checks it): from then on unpaired clients are refused.
+     the tablet. (Later, the bonded tablet can call `BLE.StartPairing` again to admit a replacement tablet,
+     and `BLE.DeletePairedDevice {addr}` to drop one.)
+   - `Cloud.SetConfig {config:{enable:false}}`.
+   - Wait until `provision` reads `complete`, then forget the network **and close the access point** — an
+     open access point is an unauthenticated HTTP path to the relay:
+     `WiFi.SetConfig {config:{sta:{enable:false}, ap:{enable:false}}}`. From here the bonded tablet is the
+     only thing that can talk to the plug.
+   If the Pair screen finds the plug already `complete` and refusing: factory-reset it (the firmware update
+   survives; bonds and the network do not), bond first while it is `pending`, then provision it again — the
+   Pair screen can do that over Bluetooth with `WiFi.SetConfig {config:{sta:{ssid:…, pass:…, enable:true}}}`
+   — wait for `complete`, and forget the network as above.
 3. Verify: `Switch.Set {id:0, on:true, toggle_after:5}` → the PSU comes up, the piano's System page shows
-   "7 of 7 answering" within 5 s; the plug clicks off after 5 s and the page shows "0 of 7".
+   "7 of 7 answering" within 5 s; the plug clicks off after 5 s and the page shows "0 of 7". Then check 9.
+
+The app reads `provision` at every connect. On `locked` it says "Unplug the power plug for five seconds and
+plug it back in, then open Pair the power plug again" — the setup above was never finished. Whatever order
+turns out to work on the bench is written back into this section.
 
 ## The app's routine (the contract)
 
@@ -102,6 +123,25 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 9. **Show the plug** on the System page from `Switch.GetStatus {id:0}`: `output`, `timer_duration`,
    `apower` (the PSU's draw proves the rail is really up).
 
+## Guest play (the iPad) — Steven to decide
+
+During guest play (`BLE_LOCK.md`: `lock guest <minutes>`, 1–240) the tablet lets go of the piano so the iPad
+can connect, and the piano takes one central at a time: the tablet cannot CHECK, so under rule 3 it would
+never ARM and the iPad would play silence. The app session put two choices to Steven:
+
+- **(a)** Guest play ARMs **without CHECK** for the window the tablet itself started, capped at 60 minutes
+  while the plug feature is on (the firmware allows 240), with a countdown and an "End guest play" button
+  that reconnects, sends `lock guest 0`, the stop sequence and CUT. Exposure: a controller or trunk that dies
+  *during an attended guest session* keeps the rail up until the window ends — at most an hour, with a person
+  at the iPad. The firmware's own layers (`SAFETY.md`) stay active throughout: the controller is alive and
+  connected.
+- **(b)** Guest play is unavailable while the plug feature is on.
+
+The firmware chat recommends (a): the fault the plug exists for is a coil hot *while nobody is there*; a guest
+session is attended by definition and ends by the clock. The full rule can be restored later by letting the
+piano keep a second central (the tablet's console link while the iPad plays) — a 2.2.0 candidate, noted, not
+promised. If Steven chooses (a), rule 3 carries this exception the way rule 6 carries the update's.
+
 ## The firmware's side (2.1.0)
 
 - A missing board is re-probed **every 1 s** (the 5 s health check of online boards is unchanged), so the
@@ -129,10 +169,13 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 7. A firmware update with the plug flow: the new image confirms itself (`!ota=confirmed`).
 8. Press the plug's button: nothing happens to the rail. Pull the plug's mains and restore it: the rail
    stays off.
+9. Power-cycle the plug with no known Wi-Fi in range: `provision` still reads `complete`, and the tablet
+   ARMs over its bond — the setup survives offline. (If it reads `locked`, the setup section is wrong: fix it.)
 
 ## Residual risks, stated once
 
 A channel stuck on during a song with everything alive (the song's length + 30 s; the current-sense node
 fixes it); the plug's relay wearing or welding (equals today; watch `output`); the plug's firmware changing
-(no Wi-Fi, no updates); Bluetooth range from the tablet on the piano to the plug at the wall (test it in
+(off every network after setup, so no updates); the plug ending `locked` because its setup never reached
+`complete` (a power cycle and the Pair screen again); Bluetooth range from the tablet on the piano to the plug at the wall (test it in
 place); a person moving the PSU off the plug (the label).
