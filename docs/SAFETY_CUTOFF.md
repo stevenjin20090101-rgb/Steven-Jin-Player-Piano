@@ -4,6 +4,10 @@
 Steven's decision after a stuck coil was found hot with the piano idle: a cut-off relay first, the
 RS-485 trunk (`docs/RS485_TRUNK.md`) after.
 
+**Interim, in use first (2026-10-21):** a Bluetooth smart plug under the tablet's control does this job
+until the relay board exists — `docs/SMART_PLUG.md`. The rule below is the same; only who holds the rail on
+differs (the tablet instead of the controller).
+
 ## What happened, and why firmware alone cannot fix it
 
 A key was found held down with its coil hot and nothing playing. The controller had been dark or
