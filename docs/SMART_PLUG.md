@@ -101,7 +101,10 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 1. **Power wanted** is true while: a song is playing or about to (from the tap on Play), live playing is on,
    the sweep or listen test runs, a firmware update is in progress and until its outcome is known
    (`!ota` confirmed, or rolled back — BLE_OTA §9), or any other path through which the app sends notes. It
-   stays true through a playlist's gaps and drops when playback ends.
+   stays true through a playlist's gaps and drops when playback ends. The one-line test: power is wanted
+   exactly while the app may send a Note On — so Listen (microphone only) does not want it, Test every key
+   does, and the web panel's Play goes through the same gate. The Keys tab wants power while it is open; it
+   drops after 10 minutes without a key, and the next key wakes it ("Waking the piano…").
 2. **Rail-up.** ARM, then CHECK every 500 ms until every one of the seven boards reads OK — up to 10 s. With
    firmware 2.1.0 the boards answer within about 1 s of the PSU coming up; with 2.0.1 up to 5 s. The set of
    OK boards is the **baseline** for this rail-up (fewer than seven with the rail up is a trunk fault:
@@ -111,6 +114,11 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 3. **While power is wanted:** every 10 s, CHECK first, then ARM only if the piano answered and every
    baseline board is still OK. **Never ARM from a timer that did not just see a good CHECK.** Two failed
    CHECKs in a row → stop playback, CUT (best effort), show "The piano stopped answering — 24 V cut".
+   **Exception — guest play** (decided 2026-10-21, see below): while a guest window the tablet itself started
+   is running, the tablet ARMs **without CHECK**, for at most the window it set, capped at 60 minutes while the
+   plug feature is on (the firmware allows 240). It shows a countdown and an **End guest play** button —
+   reconnect, `lock guest 0`, the stop sequence, then CUT. When the window ends the tablet reconnects and this
+   rule resumes as written.
 4. **Stop.** The stop sequence (CC64 = 0, CC123), one second, then CUT. If CUT fails the timer does it
    within 30 s. Show "24 V off" calmly; it is not an error.
 5. **App exit, crash, background:** nothing to do — the timer. (The app already sends the stop sequence when
@@ -125,7 +133,7 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 9. **Show the plug** on the System page from `Switch.GetStatus {id:0}`: `output`, `timer_duration`,
    `apower` (the PSU's draw proves the rail is really up).
 
-## Guest play (the iPad) — Steven to decide
+## Guest play (the iPad) — decided: (a), capped
 
 During guest play (`BLE_LOCK.md`: `lock guest <minutes>`, 1–240) the tablet lets go of the piano so the iPad
 can connect, and the piano takes one central at a time: the tablet cannot CHECK, so under rule 3 it would
@@ -139,10 +147,11 @@ never ARM and the iPad would play silence. The app session put two choices to St
   connected.
 - **(b)** Guest play is unavailable while the plug feature is on.
 
-The firmware chat recommends (a): the fault the plug exists for is a coil hot *while nobody is there*; a guest
-session is attended by definition and ends by the clock. The full rule can be restored later by letting the
+Steven had no preference and took the firmware chat's recommendation, **(a)**: the fault the plug exists for is
+a coil hot *while nobody is there*; a guest session is attended by definition and ends by the clock. Rule 3
+carries the exception the way rule 6 carries the update's. The full rule can be restored later by letting the
 piano keep a second central (the tablet's console link while the iPad plays) — a 2.2.0 candidate, noted, not
-promised. If Steven chooses (a), rule 3 carries this exception the way rule 6 carries the update's.
+promised.
 
 ## The firmware's side (2.1.0)
 
