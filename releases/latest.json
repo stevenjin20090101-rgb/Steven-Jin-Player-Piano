@@ -1,11 +1,11 @@
 {
-  "version": "2.1.0",
-  "build": "edb95f5",
-  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.0/firmware-2.1.0.bin",
-  "sizeBytes": 1139504,
-  "sha256": "32f2176cf4feb3b56484a39d20e5b24da9d5ae0633fe3e71dfaeffdd16f86ba2",
-  "sig": "NAN1pSETIp119iDIfrS0Uyz2a2n8uG+KoUKGVuo6enanRgX7KzciwIn4hzrY0d9WY5F9rDOoiEt7Xj4vPfQNBg==",
+  "version": "2.1.1",
+  "build": "cfc11b2",
+  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.1/firmware-2.1.1.bin",
+  "sizeBytes": 1140288,
+  "sha256": "9efa2e5dcad8d54bab61ac645e426c95916c9e87d827d80bdf7a2a5503df12d3",
+  "sig": "aCOnNNSdp3c/MrUg2eQxicKm5QxI2SUZzr5FqH8A3Gn1CXS91kDex3FmiYgLSDHYDLSW99Cl/PsxjlBdVPJTDw==",
   "minAppVersionCode": 35,
-  "notes": "Bluetooth lock: after this update the piano pairs itself to the first Steven Piano app that connects and from then on takes settings and notes only from it; other devices play only during guest play started from the tablet, and updates never go backwards. Power boards that lose their 24 V are back within a second of it returning, ready for the smart plug.",
+  "notes": "Adds the restart command the app's safety check uses after a missed key: trusted tablet only, every coil released first, never while an update is pending. On top of 2.1.0's Bluetooth lock and the 1 s power-board re-probe for the smart plug.",
   "usbOnly": false
 }
