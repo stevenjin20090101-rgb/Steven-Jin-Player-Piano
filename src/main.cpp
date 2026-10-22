@@ -686,6 +686,7 @@ static void printHelp() {
         "    off                      release everything (one ALLCALL)\n"
         "    broadcast                ALLCALL FULL_OFF (hits every PCA9685 at once)\n"
         "    panic                    EMERGENCY STOP — 5x ALLCALL + force Full Power on\n"
+        "    restart                  release everything, then reset the controller (trusted; not while an update is pending)\n"
         "    snappy                   lowest-latency preset (leds off, no deferral, no humanize) + save\n"
         "    cinematic                soft/expressive preset (velocity dynamics + soft release) + save\n"
         "    save                     persist current settings to flash now\n"
@@ -1017,6 +1018,8 @@ static const SettingRow kSettingRows[] = {
     FACT_ROW("auth",       "%d",  ble_lock_asker_trusted() ? 1 : 0),
     { "nonce",     true, ble_lock_nonce_hex },
     FACT_ROW("guest",      "%lu", (unsigned long)ble_lock_guest_seconds()),
+    // The `restart` console command exists (docs/SMART_PLUG.md, 2.1.1).
+    FACT_ROW("restartproto", "%d",  1),
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
@@ -1101,6 +1104,12 @@ static bool energizesCoils(const char *line) {
     return false;
 }
 
+// `restart` (docs/SMART_PLUG.md rule 10, 2.1.1): the reset it armed, as a
+// millis() deadline; 0 = none. loop() resets the controller once it has
+// passed. Until then the passes run as usual, so the reply goes out first.
+static const uint32_t kRestartDelayMs = 200;
+static uint32_t       s_restartAtMs   = 0;
+
 // Runs one console command. `line` is a NUL-terminated buffer the caller owns
 // (its trailing spaces are trimmed in place); `source` says where it came
 // from. Every reply goes through Console. For SRC_BLE the caller (the
@@ -1180,6 +1189,27 @@ static void handleLine(char *line, ConsoleSource source) {
         forgetSustain();          // and stays up
         g_fullPowerMode = true;
         Console.println("  PANIC: all solenoids released, Full Power forced ON");
+    } else if (!strcmp(line, "restart")) {
+        // Reset the controller on request (docs/SMART_PLUG.md rule 10): the
+        // piano goes quiescent the way an update makes it, then loop() resets
+        // it kRestartDelayMs later. Never during an update, and never while
+        // this image is on trial: a reset before it has confirmed itself rolls
+        // it back (docs/BLE_OTA.md §9).
+        if (ble_ota_session_active()) { Console.println("  refused — updating firmware"); return; }
+        if (!strcmp(fw_ota_word(), "pending")) {
+            Console.println("  refused — this firmware has not confirmed itself yet");
+            return;
+        }
+        piano_stop_for_update();      // bench test ended, queue flushed, every coil released, pedal up, strip dark
+        set_energize_inhibit(true);   // after the stop: ending a bench test clears the inhibit
+        settings_boot_reset();        // a deliberate reset never counts toward crash-safe mode
+        Console.println("  restarting");
+        if (s_restartAtMs == 0) {     // a repeated `restart` keeps the first deadline
+            const uint32_t at = millis() + kRestartDelayMs;
+            s_restartAtMs = at ? at : 1;
+            Serial.printf("[restart] requested over %s — resetting in %lu ms\n",
+                          source == SRC_BLE ? "Bluetooth" : "USB", (unsigned long)kRestartDelayMs);
+        }
     } else if (!strcmp(line, "snappy")) {
         // Lowest-latency "like before" preset: no LED blocking, no timing
         // deferral, no cushion — every NoteOn fires the instant it arrives.
@@ -2080,6 +2110,15 @@ void loop() {
         Serial.println("[midi] all-notes-off serviced");
     }
 
+    // `restart` (handleLine), once its deadline has passed. Every coil was
+    // released and energizing inhibited when the command ran, and the passes
+    // since ran as usual, so the Bluetooth console has flushed the reply. One
+    // more ALLCALL all-off, then the reset; boot sends its own before anything.
+    if (s_restartAtMs != 0 && (int32_t)(millis() - s_restartAtMs) >= 0) {
+        broadcastAllOff();
+        ESP.restart();
+    }
+
     // Firmware update over Bluetooth (docs/BLE_OTA.md): the session's tick, at
     // most one Control frame and 4,096 bytes of image a pass, the self-test that
     // confirms a new image. After the safety ticks and the all-off services
@@ -2181,9 +2220,10 @@ void loop() {
             }
         }
 
-        // The status line: the BLE state, or the firmware update's text while
-        // one runs and for a minute after one (docs/BLE_OTA.md §7, §9), else
-        // the bench signal test's, else the Bluetooth lock's pairing window or
+        // The status line: the BLE state, or `Restarting...` until a `restart`
+        // resets the controller, else the firmware update's text while one
+        // runs and for a minute after one (docs/BLE_OTA.md §7, §9), else the
+        // bench signal test's, else the Bluetooth lock's pairing window or
         // guest play (docs/BLE_LOCK.md). Set only when it changes; the BLE
         // line goes back when the text ends.
         {
@@ -2191,7 +2231,10 @@ void loop() {
             char     ota[48];
             uint32_t otaRgb = 0;
             bool     awake  = true;    // an update, its outcome or the bench test keeps the screen on
-            if (!ble_ota_status_text(ota, sizeof ota, &otaRgb)) {
+            if (s_restartAtMs != 0) {
+                snprintf(ota, sizeof ota, "Restarting...");   // ASCII: the status font has no "…"
+                otaRgb = 0x60C0FF;                            // the update's blue
+            } else if (!ble_ota_status_text(ota, sizeof ota, &otaRgb)) {
                 if (i2c_wave_status_text(ota, sizeof ota)) otaRgb = 0x60C0FF;   // the bench test, in the update's blue
                 else if (!ble_lock_status_text(ota, sizeof ota, &otaRgb, &awake)) ota[0] = '\0';
             }

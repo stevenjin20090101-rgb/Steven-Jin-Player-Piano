@@ -112,6 +112,7 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 | `help` / `status` | Command list / full current state (firmware version, boards, tunables, i2c fault count) |
 | `dump` / `get <name>` | Every setting as `name=value` lines, then `end` / one of them (facts too: `get !fw`) |
 | `off` / `broadcast` / `panic` | Release everything (escalating levels; panic also forces Full-Power) |
+| `restart` | Release everything, then reset the controller 200 ms later (2.1.1; refused during an update or while new firmware has not confirmed itself; over Bluetooth trusted only) |
 | `note <midi> <vel>` | Play through the full dispatch path (vel 0 = release) |
 | `rawnote <midi> <pwm>` | Strike-tester: raw force 0–4096, bypasses velocity mapping |
 | `fire <board> <ch> <pwm>` | Drive one PCA9685 channel directly |

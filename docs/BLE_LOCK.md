@@ -76,7 +76,9 @@ New facts in `dump` / `get`, after `!trips`:
 **Management** (trusted connection or USB): `lock pairwindow` (5-minute window for another device),
 `lock forget` (remove every key → `open`), `lock guest <minutes>` (guest play; 0 ends it). USB only:
 `lock open` (window), `lock reset` (= forget). Also `lock status` (one line, both), and on USB
-`lock selftest` (the device's X25519 / SHA-256 / HMAC against a fixed vector, see below).
+`lock selftest` (the device's X25519 / SHA-256 / HMAC against a fixed vector, see below). From 2.1.1 also
+`restart` (release everything, then reset the controller: `docs/SMART_PLUG.md` rule 10), trusted or USB: it
+is in the console's allow-list and not in the untrusted one.
 
 ### Replies (pinned with the app, 2026-10-12)
 
@@ -100,6 +102,10 @@ Every reply line starts with two spaces except `!claim=`; the app matches these 
 | `lock guest 0` | | `  guest play off` |
 | `lock guest …` | anything else | `  lock guest out of range (0..240)` |
 | any `lock …` | from an untrusted connection (claimed piano) | `  refused — not authorised (send auth first)` |
+| `restart` (2.1.1) | trusted or USB | `  restarting`, and the controller resets 200 ms later |
+| | an update is running | `  refused — updating firmware` |
+| | the running image has not confirmed itself (`!ota=pending`) | `  refused — this firmware has not confirmed itself yet` |
+| | from an untrusted connection (claimed piano) | `  refused — not authorised (send auth first)` |
 
 As built, a few more lines the app does not need to match (each contains `refused` or `usage:`, so the app
 already reads them as refusals): `  claim refused — wait 1 s` (a claim's X25519 work runs on the loop task,

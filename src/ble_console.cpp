@@ -177,6 +177,7 @@ static const char *const kAllowed[] = {
     "status", "dump", "get", "help", "?", "off", "broadcast", "panic", "save",
     "ledtest", "testmin", "testmax", "note",
     "soft", "cinematic", "expressive", "snappy",
+    "restart",                                    // 2.1.1; trusted only: not in the lock's open list
 };
 
 // True if the first word of `line` (up to the first space) is exactly `word`.

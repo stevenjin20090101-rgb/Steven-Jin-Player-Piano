@@ -134,6 +134,7 @@ Read-only facts are prefixed `!`. Exact list and order:
 !auth=0|1                           (the connection that asked has proved a key; 1 on an open piano and over USB)
 !nonce=<32 hex>                     (the asking connection's 16-byte nonce; 32 zeros over USB)
 !guest=<seconds left>               (guest play; 0 = off)
+!restartproto=1                     (the `restart` command exists, §5, from 2.1.1)
 leds=0|1
 ledmode=0..3
 ledbright=0..255
@@ -201,6 +202,9 @@ console also hands `claim`, `auth` and `lock …` to the lock before the allow-l
 piano an untrusted connection may run only `dump`, `get`, `status`, `help`, `off` and `broadcast`
 (`  refused — not authorised (send auth first)` for anything else).
 
+`!restartproto=1` (added 2026-10-21 for 2.1.1: the `restart` command exists) follows `!guest`, a compatible
+addition of the same kind; the app sends `restart` only to a piano that lists it.
+
 **`get <name>`** prints the single `name=value` line for any name in the list above
 (including the `!` facts), or `  unknown setting` for anything else. The name may be given
 with or without its `!`; a fact is always answered as `!name=value` (`get fw` and
@@ -223,8 +227,15 @@ listed in `help`.
 else is refused). Allowed over NUS: `name value` for every tunable in `dump` except
 `keyforce_white` / `keyforce_black`; `minwhite` (the same variable as `min`); and the
 commands `status`, `dump`, `get`, `help`, `?`, `off`, `broadcast`, `panic`, `save`,
-`ledtest`, `testmin`, `testmax`, `note`, and the presets `soft`, `cinematic`,
-`expressive`, `snappy`. A line's command is its first word, compared exactly.
+`ledtest`, `testmin`, `testmax`, `note`, `restart` (from 2.1.1), and the presets `soft`,
+`cinematic`, `expressive`, `snappy`. A line's command is its first word, compared exactly.
+
+`restart` (docs/SMART_PLUG.md rule 10) makes the piano quiescent the way an update does —
+queued notes dropped, every coil released through the verified all-off, pedal up, strip
+dark, energizing inhibited — replies `  restarting` and resets the controller 200 ms later
+(the next boot reads `!reset=software`); it is refused with `  refused — updating firmware`
+while an update runs and `  refused — this firmware has not confirmed itself yet` while
+`!ota=pending`, and on a claimed piano it needs a trusted connection (docs/BLE_LOCK.md).
 
 Everything else — known or not — is refused over NUS with the reply
 `  refused over Bluetooth — use the USB console` (after the `> line` echo), so a command
