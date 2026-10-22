@@ -235,7 +235,7 @@ queued notes dropped, every coil released through the verified all-off, pedal up
 dark, energizing inhibited — replies `  restarting` and resets the controller 200 ms later
 (the next boot reads `!reset=software`); it is refused with `  refused — updating firmware`
 while an update runs and `  refused — this firmware has not confirmed itself yet` while
-`!ota=pending`, and on a claimed piano it needs a trusted connection (docs/BLE_LOCK.md).
+`!ota=pending`, and on a claimed piano it needs a trusted connection (docs/BLE_LOCK.md). It closes the Bluetooth links itself right before the reset, so the app sees the drop at once. It does not save: settings changed in the last 30 s are kept only if `save` is sent first.
 
 Everything else — known or not — is refused over NUS with the reply
 `  refused over Bluetooth — use the USB console` (after the `> line` echo), so a command

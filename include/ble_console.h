@@ -23,7 +23,7 @@
 // SAFETY. Default deny: only the commands in the allow-list run over
 // Bluetooth (every tunable `dump` lists except per-key force, plus status,
 // dump, get, help, off, broadcast, panic, save, ledtest, testmin, testmax,
-// note and the four presets). Everything else — known or not — gets
+// note, restart and the four presets). Everything else — known or not — gets
 // BLE_REFUSAL, so a command added later stays bench-only until someone
 // allows it here.
 //

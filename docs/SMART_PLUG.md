@@ -180,8 +180,9 @@ promised.
   resets the controller about 200 ms later with one more ALLCALL all-off right before. Boot re-asserts the
   all-off; the lock keys and settings are in NVS, so the piano comes back claimed; guest play, in RAM, ends.
   Refused during an update (`  refused — updating firmware`) and while `!ota=pending` (`  refused — this
-  firmware has not confirmed itself yet`: a reset then would roll the update back). A deliberate restart does
-  not count toward crash-safe mode. `!restartproto=1` in `dump` says the command exists.
+  firmware has not confirmed itself yet`: a reset then would roll the update back). The links are closed right before the reset, so the app sees the drop at once. A deliberate restart
+  does not count toward crash-safe mode (the counter counts only panic, watchdog and brownout resets), and it
+  does not save: settings changed in the last 30 s are kept only if `save` is sent first. `!restartproto=1` in `dump` says the command exists.
 - Nothing else changes. Every layer of `SAFETY.md` stays; the update self-test keeps needing a board online.
 - Not added: a "rail off" hint command. The firmware does not need to know *why* boards are gone, and the
   screen shows nothing for missing boards.

@@ -224,6 +224,7 @@ public:
         set_energize_inhibit(true);   // FIRST: the dispatch layer refuses every energize from here
         s_sessionActive = true;       // the note funnel drops notes before the queue is flushed
         piano_stop_for_update();      // flush, allKeysOff(), reactive LEDs, pedal up, strip dark
+        set_energize_inhibit(true);   // AGAIN: ending a bench signal test (i2cwave) clears it
     }
 
     void leaveUpdateMode() override {

@@ -128,6 +128,13 @@ static const uint32_t kSafetyTickMs = 10;
 // switching the piano off and on clears it.
 bool g_crashSafeMode = false;
 
+// `restart` (docs/SMART_PLUG.md rule 10): the millis() deadline at which
+// loop() resets the controller; 0 = none. Until then the passes run as usual
+// so the reply goes out, but notes are dropped, the strip stays dark and the
+// pedal stays up — the window is as quiet as an update's.
+static const uint32_t kRestartDelayMs = 200;
+static uint32_t       s_restartAtMs   = 0;
+
 // Idle-dim seconds (0 = never dim). Persisted; tunable via "dimsecs".
 uint32_t g_idleDimSecs = DEFAULT_IDLE_DIM_SECS;
 // Idle brightness floor. 0 = fully dark (AMOLED burn-in protection).
@@ -339,6 +346,9 @@ void note_input_enqueue(uint8_t on, uint8_t note, uint8_t velocity, bool from_bl
     // all-off path, and the dispatch layer refuses any energize anyway
     // (SAFETY.md rule 9); this keeps refused notes out of the queue.
     if (ble_ota_session_active()) return;
+    // A reset is at most 200 ms away (`restart`): a note now would only light
+    // the strip and the screen; the dispatch layer refuses the strike anyway.
+    if (s_restartAtMs != 0) return;
     // A bench signal test holds the bus (i2c_wave.h): notes are dropped too.
     if (i2c_wave_active()) return;
     // The disconnect stop is discarding what the lost source left behind.
@@ -489,7 +499,7 @@ static void updateLeds() {
     // "crashes on complex songs".
     if (!g_ledsEnabled) return;
 
-    if (ble_ota_session_active()) {
+    if (ble_ota_session_active() || s_restartAtMs != 0) {   // dark until the update ends / the reset
         if (!s_ledsDarkForUpdate) {
             s_ledsDarkForUpdate = true;
             fill_solid(leds, LED_COUNT, CRGB::Black);
@@ -1105,11 +1115,6 @@ static bool energizesCoils(const char *line) {
 }
 
 // `restart` (docs/SMART_PLUG.md rule 10, 2.1.1): the reset it armed, as a
-// millis() deadline; 0 = none. loop() resets the controller once it has
-// passed. Until then the passes run as usual, so the reply goes out first.
-static const uint32_t kRestartDelayMs = 200;
-static uint32_t       s_restartAtMs   = 0;
-
 // Runs one console command. `line` is a NUL-terminated buffer the caller owns
 // (its trailing spaces are trimmed in place); `source` says where it came
 // from. Every reply goes through Console. For SRC_BLE the caller (the
@@ -1202,7 +1207,8 @@ static void handleLine(char *line, ConsoleSource source) {
         }
         piano_stop_for_update();      // bench test ended, queue flushed, every coil released, pedal up, strip dark
         set_energize_inhibit(true);   // after the stop: ending a bench test clears the inhibit
-        settings_boot_reset();        // a deliberate reset never counts toward crash-safe mode
+        // (A software reset is a clean boot for the crash counter — it counts
+        // only panic, watchdog and brownout resets — so nothing to clear.)
         Console.println("  restarting");
         if (s_restartAtMs == 0) {     // a repeated `restart` keeps the first deadline
             const uint32_t at = millis() + kRestartDelayMs;
@@ -2115,6 +2121,14 @@ void loop() {
     // since ran as usual, so the Bluetooth console has flushed the reply. One
     // more ALLCALL all-off, then the reset; boot sends its own before anything.
     if (s_restartAtMs != 0 && (int32_t)(millis() - s_restartAtMs) >= 0) {
+        // Drop the centrals first, so the tablet sees the link go at once
+        // instead of waiting out its supervision timeout (the update's own
+        // restart does the same); every coil is off and inhibited by now.
+        NimBLEServer *srv = NimBLEDevice::getServer();
+        if (srv != nullptr) {
+            for (uint16_t h : srv->getPeerDevices()) srv->disconnect(h);
+        }
+        delay(100);
         broadcastAllOff();
         ESP.restart();
     }
@@ -2320,7 +2334,7 @@ void loop() {
     // from the BLE callback). Change-gated + rate-limited inside, and a no-op
     // when no pedal board is installed. Held up (0 is UP in both pedal modes,
     // and retries a failed lift) while a firmware update runs.
-    pedal_tick((ble_ota_session_active() || i2c_wave_active()) ? 0 : g_sustainRaw);
+    pedal_tick((ble_ota_session_active() || i2c_wave_active() || s_restartAtMs != 0) ? 0 : g_sustainRaw);
     // (auto-release + pending-fire ticks now run at the TOP of loop() so a
     // note flood can never delay the safety net — see lastSafetyTick above.)
 

@@ -95,7 +95,9 @@ never ignore those return values.
    release, cushion or held note — and at least 500 ms after the last
    energize (`lastEnergizeMs()`). Dropping notes at the input and refusing
    console commands are the polite layer; the inhibit is the guarantee, and
-   `tools/dispatch-sim` proves it.
+   `tools/dispatch-sim` proves it. The inhibit is set *again* after
+   `piano_stop_for_update()`: ending a bench signal test (`i2cwave`) clears
+   it. `restart` (2.1.1) sets it the same way for its 200 ms before the reset.
 
 **The Bluetooth lock never gates a release** (2.1.0, `docs/BLE_LOCK.md`): NoteOff, CC 120/121/123,
 CC64 below 64, `off`, `broadcast`, the disconnect stop and the hold watchdog work for every connection,
