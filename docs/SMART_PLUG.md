@@ -156,7 +156,12 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
     microphone listens. If any key is not heard: `restart` (firmware 2.1.1, below) and a repower — CUT, 3 s,
     ARM, then the rail-up CHECK of rule 2 until the baseline — then one more sweep; still failing, Play is
     refused until a check run at the tablet passes. `!active` above 0 after the release means CUT at once,
-    stop, and Play locked.
+    stop, and Play locked. The restart is an *expected* link loss (app 1.27): once the piano has answered
+    `  restarting`, a CHECK that finds it gone sends the rail quietly to off — no stop sequence, no CUT, no
+    message; the plug's own 30 s timer bounds the relay, since the last ARM is at most 10 s old — and the
+    reconnect runs the normal rail-up of rule 2. The check never passes without reading the coils: with no
+    `dump` from the connection it asks once more, then ends unfinished ("The piano didn't report its keys.
+    Reconnect it.") and Play waits for a completed check.
 
 ## Guest play (the iPad) — decided: (a), capped
 
