@@ -25,7 +25,7 @@ holding the rail on instead of the controller.
 | Boot, before the first all-off | PCA9685s drive whatever they held | the rail is off at boot (`initial_state=off`); it comes up only for playing |
 | Firmware update | coils verified off, energize inhibited | same; the rail is kept up through the update so the new image can confirm itself (below) |
 | A channel stuck on **while a song plays** and everything answers | the hold watchdog, if the firmware can see it | **not covered** — bounded by the song's end + 30 s. The relay board does not cover it either; the per-board current sense of `RS485_TRUNK.md` will. Keep `hold` at 2000. |
-| The plug's relay welds, or someone moves the PSU to a wall outlet | — | back to today, never worse (the app warns when `output` stays on after a cut) |
+| The plug's relay welds, or someone moves the PSU to a wall outlet | — | back to today, never worse (the app warns when `apower` stays up after a cut) |
 
 "Within 40 s": the app re-arms every 10 s for 30 s, and only after the piano answered; the last good
 re-arm is at most 10 s before the fault, so 24 V stays on at most 10 + 30 s after it.
@@ -42,7 +42,8 @@ re-arm is at most 10 s before the fault, so 24 V stays on at most 10 + 30 s afte
 - The PSU is a 24 V / 40 A switch-mode supply; its inrush is switched by the plug's relay at every rail-up,
   about once per piece played: at thirty pieces a day that is some 6,000 cycles a year, against a plug relay
   good for tens of thousands of cycles at this inrush — years. A welded relay fails to today's state, which the
-  app detects (`Switch.GetStatus` → `output` still true after a cut). If the PSU has no soft-start, an NTC
+  app detects (`Switch.GetStatus` → `apower` still above the threshold after a cut; `output` only reports the
+  commanded state). If the PSU has no soft-start, an NTC
   inrush limiter in its mains lead is cheap insurance (吟晚风 to check the PSU's datasheet).
 - Pairing (the plug refusing unpaired phones) needs Shelly firmware **2.0.0 or later**
   (`BLE.StartPairing`). If the plug ships older, update it once over Wi-Fi with the Shelly app, then forget
@@ -91,9 +92,12 @@ after it), and the plug must reach `complete` **before** its setup window runs o
 3. Verify: `Switch.Set {id:0, on:true, toggle_after:5}` → the PSU comes up, the piano's System page shows
    "7 of 7 answering" within 5 s; the plug clicks off after 5 s and the page shows "0 of 7". Then check 9.
 
-The app reads `provision` at every connect. On `locked` it says "Unplug the power plug for five seconds and
-plug it back in, then open Pair the power plug again" — the setup above was never finished. Whatever order
-turns out to work on the bench is written back into this section.
+In `locked` nothing answers over Bluetooth RPC — `Shelly.GetDeviceInfo` included: the GATT connection succeeds
+and the RPC service is absent or silent. A plug with no bond that connects but gives no RPC reply within 5 s is
+taken as `locked`, and the app says "Unplug the power plug for five seconds and plug it back in, then open Pair
+the power plug again" — the setup above was never finished. A bonded plug in `complete` always answers, and the
+app reads `provision` at every connect while it does. Whatever order turns out to work on the bench is written
+back into this section.
 
 ## The app's routine (the contract)
 
@@ -108,15 +112,19 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
    exactly while the app may send a Note On — so Listen (microphone only) does not want it, Test every key
    does, and the web panel's Play goes through the same gate. The Keys tab wants power while it is open; it
    drops after 10 minutes without a key, and the next key wakes it ("Waking the piano…").
-2. **Rail-up.** ARM, then CHECK every 500 ms until every one of the seven boards reads OK — up to 10 s. With
-   firmware 2.1.0 the boards answer within about 1 s of the PSU coming up; with 2.0.1 up to 5 s. The set of
-   OK boards is the **baseline** for this rail-up (fewer than seven with the rail up is a trunk fault:
-   show it). Only then send notes. If the boards never read MISSING with the rail off — the trunk side of the
-   isolator fed from the controller, not from the rail — the wait is a fixed 1.5 s after ARM for the PSU to come
-   up instead; the bench says which (the System page with the rail off).
+2. **Rail-up.** CHECK (the piano answering), ARM, then CHECK every 500 ms until every one of the seven boards
+   reads OK — up to 10 s. With firmware 2.1.0 the boards answer within about 1 s of the PSU coming up; with
+   2.0.1 up to 5 s. The set of OK boards is the **baseline** for this rail-up (fewer than seven with the rail
+   up is a trunk fault: show it). Only then send notes. Whether the boards read MISSING with the rail off is
+   not known from the hardware notes — the trunk side of the ISO7721 barrier has its own supply, and nothing
+   says whether it comes from the rail or from the master board — so both are handled: if every board already
+   answers before ARM, the wait is a fixed 1.5 s after ARM for the PSU to come up, and `apower` above the
+   threshold of rule 9 proves the rail is up. The bench settles it (the System page with the rail off).
 3. **While power is wanted:** every 10 s, CHECK first, then ARM only if the piano answered and every
-   baseline board is still OK. **Never ARM from a timer that did not just see a good CHECK.** Two failed
-   CHECKs in a row → stop playback, CUT (best effort), show "The piano stopped answering — 24 V cut".
+   baseline board is still OK. **Never ARM from a timer that did not just see a good CHECK.** A CHECK fails
+   when the piano does not answer within 2 s *or* answers with a baseline board MISSING; a failed CHECK or ARM
+   is retried after 2 s, and two failures in a row → stop playback, CUT (best effort), show "The piano stopped
+   answering — 24 V cut" (or "… lost a power board").
    **Exception — guest play** (decided 2026-10-21, see below): while a guest window the tablet itself started
    is running, the tablet ARMs **without CHECK**, for at most the window it set, capped at 60 minutes while the
    plug feature is on (the firmware allows 240). It shows a countdown and an **End guest play** button —
@@ -129,12 +137,20 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 6. **Firmware update:** ARM every 10 s *without* CHECK from BEGIN until the outcome is known, at most
    3 minutes: the piano reboots during the update and cannot answer, and the new image confirms itself only
    with a power board online (BLE_OTA §15.3) — an update started with the rail off would roll back. The
-   firmware verified every coil off and inhibits energizing for the whole session, so this window is safe.
+   firmware verified every coil off and inhibits energizing for the whole session, so this window is safe. The
+   window starts at the first acknowledged data window after BEGIN; after the cap the app returns to
+   CHECK-then-ARM. If the rail drops before the new image has confirmed itself, nothing is lost: the self-test
+   waits for a board online and never times out, so it completes at the next rail-up (`restart` is refused
+   while `!ota=pending`, so the app cannot reset it into a rollback).
 7. **Plug unreachable while playing:** if ARM fails twice in a row the rail will drop within 30 s anyway —
    stop playback and say "Lost the power plug".
 8. **Without the plug feature** (no plug paired, or the switch off): the app behaves exactly as today.
-9. **Show the plug** on the System page from `Switch.GetStatus {id:0}`: `output`, `timer_duration`,
-   `apower` (the PSU's draw proves the rail is really up).
+9. **Show the plug** on the System page from `Switch.GetStatus {id:0}`: `output`, `timer_duration`, `apower`.
+   `output` is the *commanded* state: a welded contact still reads off. `apower` is the proof both ways — above
+   the threshold after ARM the rail is really up; above it after a CUT the relay has welded (show it; the piano
+   is back to today's state). The threshold comes from the bench: half the PSU's idle draw with the piano
+   silent, at least 2 W. The plug's clock has no network to set it, so `timer_started_at` is unusable: the app
+   counts the 30 s from its own ARM.
 10. **Safety check** (Steven, 2026-10-21; app 1.26): after every sixth piece played, with a full-screen card:
     the stop sequence; `get active` = 0 and `get boards` all OK; the 84-key sweep while the tablet's
     microphone listens. If any key is not heard: `restart` (firmware 2.1.1, below) and a repower — CUT, 3 s,
@@ -153,7 +169,10 @@ never ARM and the iPad would play silence. The app session put two choices to St
   that reconnects, sends `lock guest 0`, the stop sequence and CUT. Exposure: a controller or trunk that dies
   *during an attended guest session* keeps the rail up until the window ends — at most an hour, with a person
   at the iPad. The firmware's own layers (`SAFETY.md`) stay active throughout: the controller is alive and
-  connected.
+  connected. The app lets go of the piano by itself when guest play starts with the plug feature on (the iPad
+  needs the one connection). If End guest play cannot reconnect within 15 s (the iPad holds the piano), the
+  app CUTs anyway without `lock guest 0`: the window runs out on the piano by itself, with no power — silence,
+  not a hazard.
 - **(b)** Guest play is unavailable while the plug feature is on.
 
 Steven had no preference and took the firmware chat's recommendation, **(a)**: the fault the plug exists for is
@@ -205,11 +224,15 @@ promised.
 10. With the rail off, `get loopms` over USB stays in single-digit milliseconds: an unpowered trunk must NACK
     the probes, not hang the bus — a hung transaction waits about 1 s in this IDF build, and seven of them a
     second would starve `loop()`. If it hangs, the fix is to probe one board and skip the rest when it hangs.
+11. Unverified until the plug is on the bench, written here so they are not forgotten: the factory-reset
+    gesture (the app says "hold its button about 10 seconds"); the `BLE.ListPairedDevices` reply shape
+    (`addr`, `ctime`, `atime` per the docs); whether `Shelly.Reboot` keeps the setup window; the PSU's idle
+    `apower` with the piano silent, for rule 9's threshold.
 
 ## Residual risks, stated once
 
 A channel stuck on during a song with everything alive (the song's length + 30 s; the current-sense node
-fixes it); the plug's relay wearing or welding (equals today; watch `output`); the plug's firmware changing
+fixes it); the plug's relay wearing or welding (equals today; watch `apower`); the plug's firmware changing
 (off every network after setup, so no updates); the plug ending `locked` because its setup never reached
 `complete` (a power cycle and the Pair screen again); Bluetooth range from the tablet on the piano to the plug at the wall (test it in
 place); a person moving the PSU off the plug (the label).
