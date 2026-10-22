@@ -39,9 +39,11 @@ re-arm is at most 10 s before the fault, so 24 V stays on at most 10 + 30 s afte
 - **Only the 24 V PSU goes on the plug.** The controller's own supply and the LED strip's 5 V supply stay on
   another outlet: the piano must keep its screen, Bluetooth, settings and console while the rail is off —
   that is the whole point. Label the plug: *PIANO 24 V — must stay on the smart plug*.
-- The PSU is a 24 V / 40 A switch-mode supply; its inrush is switched by the plug's relay at every rail-up.
-  The app keeps the rail up through a playlist's gaps so an evening costs a handful of cycles, not one per
-  song. If the relay ever sticks closed the app sees it (`Switch.GetStatus` → `output` true after a cut).
+- The PSU is a 24 V / 40 A switch-mode supply; its inrush is switched by the plug's relay at every rail-up,
+  about once per piece played: at thirty pieces a day that is some 6,000 cycles a year, against a plug relay
+  good for tens of thousands of cycles at this inrush — years. A welded relay fails to today's state, which the
+  app detects (`Switch.GetStatus` → `output` still true after a cut). If the PSU has no soft-start, an NTC
+  inrush limiter in its mains lead is cheap insurance (吟晚风 to check the PSU's datasheet).
 - Pairing (the plug refusing unpaired phones) needs Shelly firmware **2.0.0 or later**
   (`BLE.StartPairing`). If the plug ships older, update it once over Wi-Fi with the Shelly app, then forget
   the network. On older firmware the plug still works, but anyone in range could switch the rail — harmless
@@ -100,8 +102,9 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 
 1. **Power wanted** is true while: a song is playing or about to (from the tap on Play), live playing is on,
    the sweep or listen test runs, a firmware update is in progress and until its outcome is known
-   (`!ota` confirmed, or rolled back — BLE_OTA §9), or any other path through which the app sends notes. It
-   stays true through a playlist's gaps and drops when playback ends. The one-line test: power is wanted
+   (`!ota` confirmed, or rolled back — BLE_OTA §9), or any other path through which the app sends notes. Since
+   2026-10-21 the app plays one piece per Play (no playlists, no shuffle), so power is wanted from the tap on
+   Play to the piece's end, then for the safety check (rule 10) — about one relay cycle per piece played. The one-line test: power is wanted
    exactly while the app may send a Note On — so Listen (microphone only) does not want it, Test every key
    does, and the web panel's Play goes through the same gate. The Keys tab wants power while it is open; it
    drops after 10 minutes without a key, and the next key wakes it ("Waking the piano…").
@@ -132,6 +135,12 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
 8. **Without the plug feature** (no plug paired, or the switch off): the app behaves exactly as today.
 9. **Show the plug** on the System page from `Switch.GetStatus {id:0}`: `output`, `timer_duration`,
    `apower` (the PSU's draw proves the rail is really up).
+10. **Safety check** (Steven, 2026-10-21; app 1.26): after every sixth piece played, with a full-screen card:
+    the stop sequence; `get active` = 0 and `get boards` all OK; the 84-key sweep while the tablet's
+    microphone listens. If any key is not heard: `restart` (firmware 2.1.1, below) and a repower — CUT, 3 s,
+    ARM, then the rail-up CHECK of rule 2 until the baseline — then one more sweep; still failing, Play is
+    refused until a check run at the tablet passes. `!active` above 0 after the release means CUT at once,
+    stop, and Play locked.
 
 ## Guest play (the iPad) — decided: (a), capped
 
@@ -165,6 +174,14 @@ promised.
   count trips until the boards return and `begin()` verifies every channel off. In that state `!i2cfails`
   climbs (an all-off that never landed *is* bus trouble) and the USB log repeats the bus-recovery line once a
   second. It arises only when a stop failed before the cut — never in the normal stop-then-cut.
+- **`restart`** (firmware 2.1.1, for rule 10): a console command on a trusted connection (or USB) that makes
+  the piano quiescent the way an update does — ends a bench signal test, drops queued notes, releases every
+  coil through the verified all-off, pedal up, strip dark, energizing inhibited — replies `  restarting`, and
+  resets the controller about 200 ms later with one more ALLCALL all-off right before. Boot re-asserts the
+  all-off; the lock keys and settings are in NVS, so the piano comes back claimed; guest play, in RAM, ends.
+  Refused during an update (`  refused — updating firmware`) and while `!ota=pending` (`  refused — this
+  firmware has not confirmed itself yet`: a reset then would roll the update back). A deliberate restart does
+  not count toward crash-safe mode. `!restartproto=1` in `dump` says the command exists.
 - Nothing else changes. Every layer of `SAFETY.md` stays; the update self-test keeps needing a board online.
 - Not added: a "rail off" hint command. The firmware does not need to know *why* boards are gone, and the
   screen shows nothing for missing boards.
