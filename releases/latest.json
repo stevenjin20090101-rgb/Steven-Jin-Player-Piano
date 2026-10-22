@@ -1,11 +1,11 @@
 {
-  "version": "2.0.1",
-  "build": "7fa4815",
-  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.0.1/firmware-2.0.1.bin",
-  "sizeBytes": 1112208,
-  "sha256": "079d0f625a34d7ef6e64d07a2e917b5e4f7e3e3937cd6ebc5da107a7ce093c45",
-  "sig": "fELfDVd0pREE0g2F8ChudwG/SS/aInS0djxbPMJo3QYtalY/YxmFAauo3VRz4YUX7rGjkZfkaUwRFfdnMNHxBw==",
-  "minAppVersionCode": 11,
-  "notes": "First update sent over Bluetooth. Adds the diagnostics the app's System page reads (temperature, memory, last start, tasks, loop timing, signal, energized keys, watchdog releases), on top of 2.0.0's settings channel and update support.",
+  "version": "2.1.0",
+  "build": "edb95f5",
+  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.0/firmware-2.1.0.bin",
+  "sizeBytes": 1139504,
+  "sha256": "32f2176cf4feb3b56484a39d20e5b24da9d5ae0633fe3e71dfaeffdd16f86ba2",
+  "sig": "NAN1pSETIp119iDIfrS0Uyz2a2n8uG+KoUKGVuo6enanRgX7KzciwIn4hzrY0d9WY5F9rDOoiEt7Xj4vPfQNBg==",
+  "minAppVersionCode": 35,
+  "notes": "Bluetooth lock: after this update the piano pairs itself to the first Steven Piano app that connects and from then on takes settings and notes only from it; other devices play only during guest play started from the tablet, and updates never go backwards. Power boards that lose their 24 V are back within a second of it returning, ready for the smart plug.",
   "usbOnly": false
 }
