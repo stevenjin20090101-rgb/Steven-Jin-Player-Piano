@@ -46,8 +46,9 @@ re-arm is at most 10 s before the fault, so 24 V stays on at most 10 + 30 s afte
   commanded state). If the PSU has no soft-start, an NTC
   inrush limiter in its mains lead is cheap insurance (吟晚风 to check the PSU's datasheet).
 - Pairing (the plug refusing unpaired phones) needs Shelly firmware **2.0.0 or later**
-  (`BLE.StartPairing`). If the plug ships older, update it once over Wi-Fi with the Shelly app, then forget
-  the network. On older firmware the plug still works, but anyone in range could switch the rail — harmless
+  (`BLE.StartPairing`). If the plug ships older, the Pair screen updates it over Bluetooth through the phone's
+  hotspot (Steven Piano 1.28); the Shelly app once if the plug refuses `Shelly.Update` over Bluetooth. On older
+  firmware the plug still works, but anyone in range could switch the rail — harmless
   for safety (on = the controller holds every coil off; off = silence), not acceptable long-term.
 
 ## One-time setup (Steven: the Shelly app once, then the app's "Pair the power plug" screen)
@@ -67,6 +68,45 @@ access point and RPC over Bluetooth shut down until a power cycle, and the table
 goes on a network once, reaches `complete`, and only then forgets the network. Two timings follow from this
 and are confirmed on the bench (check 9): the tablet must bond **before** `complete` (unpaired RPC is refused
 after it), and the plug must reach `complete` **before** its setup window runs out.
+
+**Without the Shelly app (Steven Piano 1.28, M65).** Steven's plug shipped below 2.0.0, and he chose to skip the
+Shelly app and its account: the Pair screen updates the plug itself, over Bluetooth, through the phone's hotspot
+(with internet; 2.4 GHz — "Maximize Compatibility" on an iPhone). The hotspot's name and password are typed once
+on the tablet and held in its memory only, never stored or logged. One caution: before 2.0.0 the plug cannot
+encrypt its Bluetooth link, so that password travels in the clear for the one step that sends it — use a
+hotspot password made for the day and change it after. Step 1 below becomes optional: after Find, the Pair
+screen reads the plug and chooses the way.
+
+- **Firmware older than 2.0.0, not set up with this tablet** (`pending`, `confirmed`, or no `provision` field
+  before 1.7.5): the update, over Bluetooth.
+  1. `Switch.Set {id:0, on:false}`, then `Switch.SetConfig {id:0, config:{initial_state:"off"}}`. The rail
+     stays off through the restarts; if old firmware refuses the second call, that is logged and the update
+     goes on.
+  2. `WiFi.SetConfig {config:{sta:{ssid, pass, enable:true}}}`, then `WiFi.GetStatus` every 2 s until `status`
+     is `got ip` (60 s at most). The plug goes `confirmed` here.
+  3. `Shelly.CheckForUpdate` → `stable.version`. If there is none, or it is below 2.0.0: "no update right now",
+     with the Shelly app as the way round.
+  4. `Shelly.Update {stage:"stable"}`. On an error or no reply the plug will not take its update over
+     Bluetooth (Shelly does not document it; bench check 11): use the Shelly app once (it needs a Shelly
+     account), then the Pair screen again.
+  5. The link drops. `Shelly.GetDeviceInfo` every 5 s until `ver` is 2.0.0 or later (6 minutes at most; past
+     that, a power cycle and a new search).
+  6. At once, `Shelly.FactoryReset` (the new firmware stays; the network, the bonds and the provisioning go):
+     the plug went `confirmed` on the hotspot and must not reach `complete` unbonded. Then `Shelly.GetDeviceInfo`
+     until `provision` reads `pending`, and `Switch.Set {id:0, on:false}` once more. If it is already
+     `complete` and refusing: the factory reset by its button (bench check 11).
+  7. On as for a new plug, with the same hotspot.
+- **A new plug (`pending`) on 2.0.0 or later, or the plug just updated:** bond first, then provision, over
+  Bluetooth — `BLE.StartPairing {timeout:180}` and Android's bond (`BLE.ListPairedDevices` before and after);
+  the hotspot again with `WiFi.SetConfig {config:{sta:{ssid, pass, enable:true}}}`, then `confirmed` awaited;
+  the `Switch.SetConfig`, `BLE.SetConfig` and `Cloud.SetConfig` of step 2; `complete` awaited, then at once
+  `WiFi.SetConfig {config:{sta:{enable:false}, ap:{enable:false}}}`; the check of step 3.
+- **`confirmed` on 2.0.0 or later** (set up in the Shelly app): step 2 as written.
+
+The tablet keeps the plug as paired only once its network is off and its access point closed: a setup that
+stops before that leaves the app not switching the rail. A `complete` plug this tablet is bonded with (set up
+by another tablet, or a setup cut short after its bond) gets the settings, the cloud off and the network closed
+once more before its check.
 
 1. Plug it in. With the **Shelly app on Steven's phone**, add it to a phone hotspot that has internet,
    decline the cloud (or turn it off afterwards), and let it update its firmware (≥ 2.0.0 for pairing).
@@ -232,7 +272,10 @@ promised.
 11. Unverified until the plug is on the bench, written here so they are not forgotten: the factory-reset
     gesture (the app says "hold its button about 10 seconds"); the `BLE.ListPairedDevices` reply shape
     (`addr`, `ctime`, `atime` per the docs); whether `Shelly.Reboot` keeps the setup window; the PSU's idle
-    `apower` with the piano silent, for rule 9's threshold.
+    `apower` with the piano silent, for rule 9's threshold; whether `Shelly.Update` is accepted over Bluetooth;
+    the provisioning window across the update's restart (`confirmed` at the hotspot, `complete` about 5 minutes
+    later; the update about 2, the reset straight after); the relay's state after `Shelly.FactoryReset`;
+    whether firmware before 2.0.0 takes `initial_state`.
 
 ## Residual risks, stated once
 
