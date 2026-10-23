@@ -24,7 +24,7 @@ holding the rail on instead of the controller.
 | App crashed, tablet died, Bluetooth off | nothing notices | the timer: off within 30 s |
 | Boot, before the first all-off | PCA9685s drive whatever they held | the rail is off at boot (`initial_state=off`); it comes up only for playing |
 | Firmware update | coils verified off, energize inhibited | same; the rail is kept up through the update so the new image can confirm itself (below) |
-| A channel stuck on **while a song plays** and everything answers | the hold watchdog, if the firmware can see it | **not covered** — bounded by the song's end + 30 s. The relay board does not cover it either; the per-board current sense of `RS485_TRUNK.md` will. Keep `hold` at 2000. |
+| A channel stuck on **while a piece plays** and everything answers | the hold watchdog, if the firmware can see it | **not covered during the piece** — bounded by the piece's end: the post-piece power check of rule 11 (app 1.30) then cuts and refuses the next Play. The relay board does not cover it either; the per-board current sense of `RS485_TRUNK.md` will. Keep `hold` at 2000. |
 | The plug's relay welds, or someone moves the PSU to a wall outlet | — | back to today, never worse (the app warns when `apower` stays up after a cut) |
 
 "Within 40 s": the app re-arms every 10 s for 30 s, and only after the piano answered; the last good
@@ -202,6 +202,18 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
     reconnect runs the normal rail-up of rule 2. The check never passes without reading the coils: with no
     `dump` from the connection it asks once more, then ends unfinished ("The piano didn't report its keys.
     Reconnect it.") and Play waits for a completed check.
+11. **Post-piece power check** (Steven, 2026-10-23; app 1.30): once per piece, between the stop sequence and
+    the CUT — never at pauses inside a piece. After CC64 = 0 and CC123 (the pedal node releases), two `apower`
+    samples about 1 s apart, both expected back near the **pedal-up idle draw** learned at each rail-up right
+    after the CHECK (every channel verified off by `begin()` then); also `!active` and `!i2cfails`. Then CUT as
+    always, about 1 s later than before. A draw more than about 6 W above idle (half a coil: one coil is ~0.5 A,
+    ~12 W at Full power, roughly duty × 12 W in PWM mode; scaled with a floor), or `!active` above 0, or new
+    I²C failures → "A key stayed on after the piece — 24 V cut", and Play waits for a safety check. Steven
+    accepts the trade-off: a key stuck mid-piece stays hot until the piece ends, as today; the check keeps the
+    next piece off a faulty channel. The pedal node is on the rail (MKS SERVO42C stepper, load-adapting:
+    10–30 W holding the pedal down, a few watts up; it reboots at every rail-up, so the pedal must be up when the
+    rail comes up — the app's rail-up precedes the piece's first CC64); the pedal-down baseline is recorded
+    during the safety check for later tuning, not used for a cut.
 
 ## Guest play (the iPad) — decided: (a), capped
 
@@ -247,6 +259,9 @@ promised.
   firmware has not confirmed itself yet`: a reset then would roll the update back). The links are closed right before the reset, so the app sees the drop at once. A deliberate restart
   does not count toward crash-safe mode (the counter counts only panic, watchdog and brownout resets), and it
   does not save: settings changed in the last 30 s are kept only if `save` is sent first. `!restartproto=1` in `dump` says the command exists.
+- **No fault-injection command.** The app asked for a bench-only `fault hold` that energizes a coil outside
+  the safety model to prove rule 11; Steven decided "no firmware" (2026-10-23). The bench uses a dummy load
+  instead (check 12). The firmware will never hold a coil its own model cannot see.
 - Nothing else changes. Every layer of `SAFETY.md` stays; the update self-test keeps needing a board online.
 - Not added: a "rail off" hint command. The firmware does not need to know *why* boards are gone, and the
   screen shows nothing for missing boards.
@@ -276,6 +291,10 @@ promised.
     the provisioning window across the update's restart (`confirmed` at the hotspot, `complete` about 5 minutes
     later; the update about 2, the reset straight after); the relay's state after `Shelly.FactoryReset`;
     whether firmware before 2.0.0 takes `initial_state`.
+12. The post-piece power check (rule 11) with a **dummy load**: a 47 Ω / 25 W resistor on an XT60 pigtail,
+    plugged into the 24 V chain just before a piece ends — the same ~12 W step as a stuck coil, no coil heat.
+    The check must cut and refuse the next Play; unplug the load, run the safety check, Play again. An ordinary
+    held note proves the `!active` and `!i2cfails` reads.
 
 ## Residual risks, stated once
 
