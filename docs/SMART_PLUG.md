@@ -252,10 +252,22 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
     faulty channel. **Known gap:** a coil already on at rail-up is counted into idle, and only the 30 W cap
     catches it — with the PSU idling at 5–15 W plus the pedal node, idle + one coil (~12 W) can sit under
     30 W, which is exactly a shorted MOSFET at rail-up. Remembering the usual idle across rail-ups (and
-    tripping when a rail-up's idle is more than T above it) would close it; not built yet. The pedal node is on the rail (MKS SERVO42C stepper, load-adapting:
+    tripping when a rail-up's idle is more than T above it) closes it — built as (c), app 1.31. The pedal node is on the rail (MKS SERVO42C stepper, load-adapting:
     10–30 W holding the pedal down, a few watts up; it reboots at every rail-up, so the pedal must be up when the
     rail comes up — the app's rail-up precedes the piece's first CC64); the pedal-down baseline is recorded
     during the safety check for later tuning, not used for a cut.
+    **(c) The usual idle** (app 1.31). Idle is learned at each rail-up, so a coil already on then (a shorted
+    MOSFET, the burnt-coil fault) would count as idle, and one channel (~12 W over a 5–15 W supply and the pedal
+    node) also stays under the 30 W rail-up cap. *What is kept:* the app keeps each plug's last 5 rail-up idle
+    readings, with their times, with its pairing; a forgotten or re-paired plug starts empty. *The trip:* with at
+    least 3 kept, a rail-up reading more than T above their median (6 W at Full power, 3 W in PWM) that is still
+    so 1 s later with no notes held (or unread then) means CUT, "The 24 V draws N W more than usual with nothing
+    playing — 24 V cut", and Play waits for a safety check. A reading that tripped is never kept. *After a trip:*
+    a safety check that passes with the microphone sweep (every key heard) clears the kept readings — a shorted
+    channel holds its key down, so its strike cannot sound and the sweep fails; a check without the sweep keeps
+    them, so the trip repeats at each rail-up (annoying, but safe). *Every checked rail-up is weighed,* the
+    safety check's own too: while the draw stays high the check cannot sweep, so a lasting new normal (a
+    different supply) means forgetting and re-pairing the plug. No firmware change.
 
 ## Guest play (the iPad) — decided: (a), capped
 
