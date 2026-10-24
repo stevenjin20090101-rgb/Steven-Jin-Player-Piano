@@ -49,7 +49,8 @@ re-arm is at most 10 s before the fault, so 24 V stays on at most 10 + 30 s afte
   (`BLE.StartPairing`). If the plug ships older, the Pair screen updates it over Bluetooth through the phone's
   hotspot (Steven Piano 1.28); the Shelly app once if the plug refuses `Shelly.Update` over Bluetooth. On older
   firmware the plug still works, but anyone in range could switch the rail — harmless
-  for safety (on = the controller holds every coil off; off = silence), not acceptable long-term.
+  for safety (on = the controller holds every coil off; off = silence), not acceptable long-term. Steven chose
+  to run his plug as it is (1.29, below), with the plug watch as the guard.
 
 ## One-time setup (Steven: the Shelly app once, then the app's "Pair the power plug" screen)
 
@@ -107,6 +108,25 @@ The tablet keeps the plug as paired only once its network is off and its access 
 stops before that leaves the app not switching the rail. A `complete` plug this tablet is bonded with (set up
 by another tablet, or a setup cut short after its bond) gets the settings, the cloud off and the network closed
 once more before its check.
+
+**As it is (Steven Piano 1.29, Steven's choice).** On firmware older than 2.0.0 the Pair screen offers *Use it
+as it is* first and *Update and lock it* second.
+- **The steps:** switch off; the same `Switch.SetConfig` (with the `in_mode` retry); `BLE.SetConfig` RPC on;
+  cloud off.
+- **Network:** only with `provision` pending or confirmed (1.7.5 and later) does it ask for the hotspot once,
+  wait for `got ip` and `complete` (6 min at most), and check that the plug still answers unpaired. If it
+  refuses, the words say it needs its update after all, the reset is shown, and nothing is stored.
+- **Before 1.7.5, or already `complete`:** no network is needed.
+- **Then:** the network and access point are closed before anything is stored. The pairing is stored with
+  `locked=false` and no bond entry, then the check runs.
+- **An unlocked plug:** any phone in range with the Shelly app can switch it, so **the plug watch** runs for
+  every plug, locked or not. While nothing wants the rail (and never during an update or guest play),
+  `Switch.GetStatus` every 60 s. If the plug is found on: its settings are put back, then a CUT with the weld
+  check, and "The power plug had been switched on by something else: switched off". Settings are put back
+  (`initial_state`, `auto_on`, `in_locked`, `in_mode`, the cloud, `sta`/`sta1`/`ap`) on the first read, after
+  a missed read, whenever it is found on, and every 10 minutes.
+- **Reset:** a factory reset only works within 60 s of plugging in, by holding the button 10 s (5 s only
+  reboots), per Shelly's documentation.
 
 1. Plug it in. With the **Shelly app on Steven's phone**, add it to a phone hotspot that has internet,
    decline the cloud (or turn it off afterwards), and let it update its firmware (≥ 2.0.0 for pairing).
@@ -202,21 +222,37 @@ Terms: **ARM** = `Switch.Set {id:0, on:true, toggle_after:30}` · **CUT** = `Swi
     reconnect runs the normal rail-up of rule 2. The check never passes without reading the coils: with no
     `dump` from the connection it asks once more, then ends unfinished ("The piano didn't report its keys.
     Reconnect it.") and Play waits for a completed check.
-11. **Power watch** (Steven, 2026-10-23; app 1.30), two parts, no firmware change. **(a) The floor watch during
-    the piece:** while a piece plays with the rail up and the pedal up, the app reads `apower` about every 2 s
-    and takes the residual = reading − (idle + its own time-averaged held-key count over that second × one
-    coil's draw). If every residual over the last ~20 s of pedal-up playing (at least ~8 samples) stays more
-    than about 6 W above zero, a coil is on that the music is not holding: stop the piece, CUT, "A key stayed
-    on — 24 V cut", and Play waits for a safety check. Samples with the pedal down are skipped and the window
-    restarts when the pedal comes up. **(b) The post-piece check:** once per piece, between the stop sequence
+11. **Power watch** (Steven, 2026-10-23; app 1.30), two parts, no firmware change. **(a) The floor watch during the piece**
+    (app 1.30, as built). *When:* while a piece plays with the rail up after a checked rail-up (not while kept
+    for an update or guest play), the app reads `apower` every 1.5–2.5 s — 2 s on average, the steps varied so
+    a steady beat cannot stay in step. *Expected draw:* idle + 12 W × the keys the app's router held; each key
+    counts from its strike for at least 60 ms (`minstrike`) and at most the piano's `hold` — the hold watchdog
+    releases every coil then, so a coil on longer is the fault. *Which second:* the second `apower` averaged is
+    the plug's own, so the held count is taken over every 1 s window ending 0–1 s before the request; a reading
+    counts when it is more than T (6 W) above expected even at the busiest window, restarts the run when it is
+    not even at the quietest, and otherwise does neither. *The trip:* 8 counted readings in a row spanning at
+    least 16 s → stop the piece, CUT, "A key stayed on — 24 V cut", and the safety check runs before the next
+    Play — about 20 s after the fault with the pedal up. *The pedal and PWM:* a reading the pedal may have
+    touched (CC64 down within 2.5 s of it) restarts the run; with Full power off (PWM drive: each coil draws its
+    note's duty) the floor watch is off, and (b) still runs with T at its 3 W floor. *Idle:* the rail-up
+    reading after the CHECK, then the lowest reading with no key held and the pedal up. *The rail-up cap:* more
+    than 30 W with nothing sent, twice a second apart → CUT, "The 24 V draws N W with nothing playing — 24 V
+    cut", and the same check. *Bench (check 12):* confirm `apower` is about a 1 s mean (a much shorter one
+    could trip on block chords with short gaps), and note the idle draw at rail-up and with the pedal up.
+    **(b) The post-piece check:** once per piece, between the stop sequence
     and the CUT. After CC64 = 0 and CC123 (the pedal node releases), two `apower`
     samples about 1 s apart, both expected back near the **pedal-up idle draw** learned at each rail-up right
     after the CHECK (every channel verified off by `begin()` then); also `!active` and `!i2cfails`. Then CUT as
     always, about 1 s later than before. A draw more than about 6 W above idle (half a coil: one coil is ~0.5 A,
     ~12 W at Full power, roughly duty × 12 W in PWM mode; scaled with a floor), or `!active` above 0, or new
-    I²C failures → "A key stayed on after the piece — 24 V cut", and Play waits for a safety check. Together:
-    a key stuck mid-piece is caught within about 20 s (or at the next pedal-up stretch), and the next piece
-    never runs on a faulty channel. The pedal node is on the rail (MKS SERVO42C stepper, load-adapting:
+    I²C failures → "A key stayed on after the piece — 24 V cut", and Play waits for a safety check. As built
+    (1.30) it runs at any rail stop after keys were struck — the Keys tab, Test every key and the safety
+    check's own sweep included — and the CUT comes about 2.2 s after the stop sequence. Together: a key stuck
+    mid-piece is caught within about 20 s (or at the next pedal-up stretch), and the next piece never runs on a
+    faulty channel. **Known gap:** a coil already on at rail-up is counted into idle, and only the 30 W cap
+    catches it — with the PSU idling at 5–15 W plus the pedal node, idle + one coil (~12 W) can sit under
+    30 W, which is exactly a shorted MOSFET at rail-up. Remembering the usual idle across rail-ups (and
+    tripping when a rail-up's idle is more than T above it) would close it; not built yet. The pedal node is on the rail (MKS SERVO42C stepper, load-adapting:
     10–30 W holding the pedal down, a few watts up; it reboots at every rail-up, so the pedal must be up when the
     rail comes up — the app's rail-up precedes the piece's first CC64); the pedal-down baseline is recorded
     during the safety check for later tuning, not used for a cut.
@@ -291,7 +327,7 @@ promised.
     the probes, not hang the bus — a hung transaction waits about 1 s in this IDF build, and seven of them a
     second would starve `loop()`. If it hangs, the fix is to probe one board and skip the rest when it hangs.
 11. Unverified until the plug is on the bench, written here so they are not forgotten: the factory-reset
-    gesture (the app says "hold its button about 10 seconds"); the `BLE.ListPairedDevices` reply shape
+    gesture (Shelly's docs: hold the button 10 s within 60 s of plugging in, 5 s only reboots — confirm); the `BLE.ListPairedDevices` reply shape
     (`addr`, `ctime`, `atime` per the docs); whether `Shelly.Reboot` keeps the setup window; the PSU's idle
     `apower` with the piano silent, for rule 9's threshold; whether `Shelly.Update` is accepted over Bluetooth;
     the provisioning window across the update's restart (`confirmed` at the hotspot, `complete` about 5 minutes
