@@ -34,8 +34,10 @@ re-arm is at most 10 s before the fault, so 24 V stays on at most 10 + 30 s afte
 
 - **Shelly Plug US Gen4** (the UL Wi-Fi / Bluetooth / Zigbee / Matter plug from Steven's listing). Leave it in
   its Wi-Fi/Bluetooth mode, never Zigbee mode. It is driven over Bluetooth only: it goes on a network **once**,
-  for the setup below (firmware update, provisioning), then forgets it — never the school Wi-Fi, no cloud — so
-  nothing can change its firmware or settings under us.
+  for the setup below (firmware update, provisioning), then forgets it — never left on the school Wi-Fi, no cloud — so
+  nothing can change its firmware or settings under us. It also runs **Matter**, a second way to hold the rail
+  on (no `toggle_after`), and advertises it for commissioning after every boot: the tablet turns it off at setup
+  and the plug watch keeps it off (Steven Piano 1.32).
 - **Only the 24 V PSU goes on the plug.** The controller's own supply and the LED strip's 5 V supply stay on
   another outlet: the piano must keep its screen, Bluetooth, settings and console while the rail is off —
   that is the whole point. Label the plug: *PIANO 24 V — must stay on the smart plug*.
@@ -128,6 +130,29 @@ as it is* first and *Update and lock it* second.
 - **Reset:** a factory reset only works within 60 s of plugging in, by holding the button 10 s (5 s only
   reboots), per Shelly's documentation.
 
+**Set up in the Shelly app, and Matter (Steven Piano 1.32).** A plug that reached `complete` without the tablet
+(set up in the Shelly app and left past its 5 minutes) refuses an unpaired tablet everything over Bluetooth,
+`Shelly.GetDeviceInfo` included. The Pair screen's **Find** then shows the way out at once, with no facts read:
+the reason; the factory reset — in the Shelly app, the plug › Settings › Factory reset, or by its button (10 s
+within the first minute after plugging in; 5 s only reboots); **Find the plug again**; and **Pair with a plug
+another tablet set up**. A plug with no bond that connects and stays silent for 5 s gets the power cycle first,
+then the same reset (Android may report the refusal as that silence). After the reset the plug is `pending` and
+the tablet sets it up as a new plug, bonding first. Every setup way sends `Matter.SetConfig
+{config:{enable:false}}` right after `BLE.SetConfig`, and one `Shelly.Reboot` serves both when either answers
+`restart_required`; firmware without Matter ("No handler") or an error is logged and the setup goes on. The
+Shelly app's way (Pair and set up while `confirmed`) now bonds first, then the settings, Matter off and its
+restart, then the cloud off: Matter off nearly always restarts the plug, and one that reached `complete` during
+that restart answers only a bonded tablet. The network close is now `WiFi.SetConfig {config:{sta:{enable:false},
+sta1:{enable:false}, ap:{enable:false}}}` (`sta`/`ap` alone if a model refuses `sta1`). The plug watch's
+settings look (the first look, after a missed read, every 10 minutes) also reads `Matter.GetConfig`: found on,
+`Matter.SetConfig` off, then `Shelly.Reboot` if asked — only while nothing wants the rail, and only with the
+switch's settings as the tablet's (`initial_state:"off"`), so the plug comes back off; the watch waits the reboot
+out and reads the plug again before going on, so the reboot is no missed read, stray on or weld. The first time
+for a pairing kept before 1.32 is quiet (logged only); after that, "The power plug's settings had been changed:
+put back". An error from `Matter.GetConfig` is skipped. The one-time setup may use any 2.4 GHz Wi-Fi with
+internet (a phone's hotspot, or the school's), forgotten at its end as before; on firmware before 2.0.0 the
+password still crosses in the clear, so the words steer that case to the phone's hotspot.
+
 1. Plug it in. With the **Shelly app on Steven's phone**, add it to a phone hotspot that has internet,
    decline the cloud (or turn it off afterwards), and let it update its firmware (≥ 2.0.0 for pairing).
 2. Straight after, from the Steven Piano app's **Pair the power plug** screen, over Bluetooth, while the
@@ -154,8 +179,9 @@ as it is* first and *Update and lock it* second.
 
 In `locked` nothing answers over Bluetooth RPC — `Shelly.GetDeviceInfo` included: the GATT connection succeeds
 and the RPC service is absent or silent. A plug with no bond that connects but gives no RPC reply within 5 s is
-taken as `locked`, and the app says "Unplug the power plug for five seconds and plug it back in, then open Pair
-the power plug again" — the setup above was never finished. A bonded plug in `complete` always answers, and the
+taken as `locked`, and the app says (1.32) "The plug didn't answer. Unplug it for 5 seconds and plug it back in,
+then find it again. If it still won't answer, reset it:", the reset under it — a `complete` plug's refusal can
+reach the app as the same silence; the setup above was never finished. A bonded plug in `complete` always answers, and the
 app reads `provision` at every connect while it does. Whatever order turns out to work on the bench is written
 back into this section.
 
@@ -344,12 +370,16 @@ promised.
     `apower` with the piano silent, for rule 9's threshold; whether `Shelly.Update` is accepted over Bluetooth;
     the provisioning window across the update's restart (`confirmed` at the hotspot, `complete` about 5 minutes
     later; the update about 2, the reset straight after); the relay's state after `Shelly.FactoryReset`;
-    whether firmware before 2.0.0 takes `initial_state`.
+    whether firmware before 2.0.0 takes `initial_state`; whether `Matter.SetConfig` answers `restart_required`;
+    whether `WiFi.SetConfig` takes `sta1`.
 12. The post-piece power check (rule 11) with a **dummy load**: a 47 Ω / 25 W resistor on an XT60 pigtail,
     plugged into the 24 V chain — the same ~12 W step as a stuck coil, no coil heat. Plugged in mid-piece with
     the pedal up, the floor watch must cut within about 20 s; plugged in just before a piece ends, the
     post-piece check must cut and refuse the next Play. Unplug the load, run the safety check, Play again. An ordinary
     held note proves the `!active` and `!i2cfails` reads.
+13. After pairing (Steven Piano 1.32), unplug the plug and plug it back in: no Matter pop-up appears nearby
+    (Android's "Matter device found"), the Shelly app shows the plug offline, and `Matter.GetConfig` answers
+    over Bluetooth with `enable:false`.
 
 ## Residual risks, stated once
 
