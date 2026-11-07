@@ -168,6 +168,7 @@ static const char *const kAllowed[] = {
     // every tunable `dump` lists, except keyforce_white / keyforce_black
     "leds", "ledmode", "ledbright", "ledcount", "ledoffset", "ledscale", "ledtail",
     "ledreverse", "reactcolor", "ledglow", "velbright", "decay", "rainspeed",
+    "ledcolor", "ledtint", "ledfade", "ledambient",   // 2.1.2
     "dimsecs", "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velmult",
     "min", "minblack", "max", "humanvel", "humantime", "burstgap", "burstboost",
     "minstrike", "isostrike", "isogap", "gap", "hold", "restrike", "softrelease",

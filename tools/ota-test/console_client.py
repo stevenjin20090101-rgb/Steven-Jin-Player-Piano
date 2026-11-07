@@ -36,7 +36,8 @@ import piano_ble as pb
 EXPECTED_DUMP_NAMES = [
     "!proto", "!fw", "!ota", "!ble", "!boards", "!i2cfails", "!pedalboard", "!uptime",
     "leds", "ledmode", "ledbright", "ledcount", "ledoffset", "ledscale", "ledtail",
-    "ledreverse", "reactcolor", "ledglow", "velbright", "decay", "rainspeed", "dimsecs",
+    "ledreverse", "reactcolor", "ledglow", "velbright", "decay", "rainspeed",
+    "ledcolor", "ledtint", "ledfade", "ledambient", "dimsecs",
     "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velmult", "min", "minblack",
     "max", "humanvel", "humantime", "burstgap", "burstboost", "minstrike", "isostrike",
     "isogap", "gap", "hold", "restrike", "softrelease", "releasepwm", "releasems", "freq",

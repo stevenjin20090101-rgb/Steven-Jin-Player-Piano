@@ -268,7 +268,7 @@ static void mode_btn_longpress_cb(lv_event_t *e) {
 
 static void cfg_colorwheel_cb(lv_event_t *e) {
     lv_color_t c = lv_colorwheel_get_rgb(lv_event_get_target(e));
-    appState.ledStaticColor = lv_color_to32(c) & 0xFFFFFF;
+    led_color_set_now(lv_color_to32(c) & 0xFFFFFF);   // no fade: the strip follows the finger
     if (cfg_color_preview) {
         lv_obj_set_style_bg_color(cfg_color_preview, c, LV_PART_MAIN);
     }

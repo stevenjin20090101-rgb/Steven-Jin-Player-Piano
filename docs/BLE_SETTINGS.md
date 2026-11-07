@@ -135,6 +135,7 @@ Read-only facts are prefixed `!`. Exact list and order:
 !nonce=<32 hex>                     (the asking connection's 16-byte nonce; 32 zeros over USB)
 !guest=<seconds left>               (guest play; 0 = off)
 !restartproto=1                     (the `restart` command exists, §5, from 2.1.1)
+!ledcolorproto=1                    (ledcolor, ledtint, ledfade and ledambient exist, from 2.1.2)
 leds=0|1
 ledmode=0..3
 ledbright=0..255
@@ -148,6 +149,10 @@ ledglow=0..10
 velbright=0|1
 decay=1..40
 rainspeed=1..40
+ledcolor=<6 lowercase hex digits, RRGGBB>
+ledtint=off|<6 lowercase hex digits>
+ledfade=0..5000
+ledambient=0..64
 dimsecs=0..3600
 dimfloor=0..255
 keyviz=0|1
@@ -205,6 +210,35 @@ piano an untrusted connection may run only `dump`, `get`, `status`, `help`, `off
 `!restartproto=1` (added 2026-10-21 for 2.1.1: the `restart` command exists) follows `!guest`, a compatible
 addition of the same kind; the app sends `restart` only to a piano that lists it.
 
+**The strip's colour** (added 2026-11-07 for 2.1.2, the app's M80; `!ledcolorproto=1` follows
+`!restartproto`). Four tunables, listed after `rainspeed`, set the one colour that Static mode and the Solid
+palette (`reactcolor=1`) show. They are written like every other setting, `name value`:
+
+- `ledcolor RRGGBB` — the strip's own colour, exactly six hex digits in any case (no `#`, no `0x`), read back
+  in lowercase. Saved (NVS `ledColor`, the value the controller's colour wheel sets too).
+- `ledtint RRGGBB` / `ledtint off` — a live colour shown over `ledcolor` until `ledtint off`, another
+  `ledtint`, or a restart. **Never saved**: `save` and the 30 s auto-save do not know it, so it costs no
+  flash wear however often it is sent (the app sends the album art's colour at each piece and on connect).
+  Changing `ledmode` or `reactcolor` keeps it.
+- `ledfade 0..5000` — milliseconds the strip cross-fades (eased in and out) whenever the colour shown changes,
+  from either key; a change in the middle of a fade starts from the colour on the strip at that moment, so
+  nothing jumps. 0 is a cut. Default 1500. Saved. A colour picked on the controller's own colour wheel shows
+  at once, so the strip keeps up with the finger; the screen's preset swatches fade like a written value.
+- `ledambient 0..64` — Reactive with the Solid palette only: the whole keyed strip glows in the colour shown
+  at this level (of 255, before `ledbright`; the cap keeps the glow's draw small on its 5 A supply), and the
+  notes ride on top of it: a note's level runs from the glow up to full, and as it fades its colour eases
+  from the colour it was struck in into the glow. 0 (the default) is the look before 2.1.2, exactly. Saved.
+  In other modes and palettes it is kept and does nothing.
+
+The colour shown is `ledtint` while it is set, else `ledcolor`. In the Solid palette a note takes the colour
+shown at the moment it is struck (mid-fade, the colour between) and keeps it as it fades. Rainbow and the other
+palettes do not use these four. Cost: a still strip pushes no frames (Static once per change, a still glow
+once); a fade pushes frames at the normal ~30 fps until it lands, no more than Reactive does while notes play.
+Nothing in the solenoid path changes.
+
+Refusals (§5's wording): `  usage: ledcolor RRGGBB (6 hex digits)`, `  usage: ledtint RRGGBB|off`,
+`  ledfade out of range (0..5000 ms)`, `  ledambient out of range (0..64)`.
+
 **`get <name>`** prints the single `name=value` line for any name in the list above
 (including the `!` facts), or `  unknown setting` for anything else. The name may be given
 with or without its `!`; a fact is always answered as `!name=value` (`get fw` and
@@ -258,7 +292,7 @@ not shown as refusals by the app: `testmin`/`testmax` on a key whose power board
 
 ## 6. Persistence and side effects (unchanged, but the app relies on them)
 
-- The 30-second auto-save persists changes; the four presets save immediately. The app
+- The 30-second auto-save persists changes (never `ledtint`, which is live only); the four presets save immediately. The app
   sends `save` when the user leaves its settings screen after changing something, so a
   piano powered off within 30 s still keeps the change.
 - `volume` below 100 turns Full Power off; `panic` turns it on; `hold` clamps to

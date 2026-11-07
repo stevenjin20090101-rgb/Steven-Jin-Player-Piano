@@ -113,6 +113,8 @@ AppState appState = {
     .ledReactivePalette = DEFAULT_REACT_PALETTE,
     .ledGlow = DEFAULT_LED_GLOW,
     .ledVelBright = (DEFAULT_LED_VELBRIGHT != 0),
+    .ledFadeMs = DEFAULT_LED_FADE_MS,
+    .ledAmbient = DEFAULT_LED_AMBIENT,
     .inputMode = INPUT_MODE_BLE_ONLY,
     .touchVelocity = 100,
 };
@@ -173,6 +175,123 @@ static void clearLedReactive() {
 // instead of waiting for the next 30 fps tick — makes reactions feel instant.
 static volatile bool s_ledReactiveDirty = false;
 
+// ---- The colour shown: ledcolor, ledtint, ledfade (2.1.2) -------------------
+// Static mode and the Solid palette show one colour: `ledtint` while it is set
+// (the app's album-art colour: live only, never saved, gone at a restart), else
+// `ledcolor` (appState.ledStaticColor, saved). Whenever that colour changes the
+// strip cross-fades to it over `ledfade` ms, starting from whatever it showed at
+// that moment, so a change in the middle of a fade carries on without a jump.
+// The fade is a function of the clock, worked out only where a frame or a note
+// needs it (loop task): no timer, and no cost while the colour is still.
+static int32_t  s_ledTint     = -1;      // 0xRRGGBB, or -1: no tint
+static uint32_t s_fadeFrom    = 0;       // the colour shown when this fade began
+static uint32_t s_fadeTo      = 0;       // the colour it fades to
+static uint32_t s_fadeStartMs = 0;
+static uint16_t s_fadeLenMs   = 0;       // this fade's length (0: no fade running)
+static bool     s_fadeStarted = false;   // first use: show the colour, no fade up from black
+// The screen's colour wheel shows its colour at once (led_color_set_now): the
+// colour it set, and a flag. Written on the LVGL task, read on the loop task.
+static volatile uint32_t s_cutColor   = 0;
+static volatile bool     s_cutPending = false;
+
+void led_color_set_now(uint32_t rgb) {
+    rgb &= 0xFFFFFF;
+    s_cutColor   = rgb;
+    s_cutPending = true;
+    appState.ledStaticColor = rgb;       // last, so the loop sees the flag with the colour
+}
+
+static inline uint32_t ledTargetColor() {
+    return (s_ledTint >= 0) ? (uint32_t)s_ledTint : (appState.ledStaticColor & 0xFFFFFF);
+}
+
+// a → b by w/255 per channel (0 is a, 255 is b).
+static uint32_t mixRgb(uint32_t a, uint32_t b, uint8_t w) {
+    uint32_t out = 0;
+    for (int sh = 0; sh <= 16; sh += 8) {
+        const uint32_t ca = (a >> sh) & 0xFF, cb = (b >> sh) & 0xFF;
+        out |= ((ca * (255u - w) + cb * w + 127u) / 255u) << sh;
+    }
+    return out;
+}
+
+static inline uint32_t rgbOf(const CRGB &c) {
+    return ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
+}
+
+// Where the running fade is at `now` (eased in and out, so it starts and lands softly).
+static uint32_t fadeColorAt(uint32_t now) {
+    const uint32_t elapsed = now - s_fadeStartMs;
+    if (s_fadeLenMs == 0 || elapsed >= s_fadeLenMs) return s_fadeTo;
+    const float t = (float)elapsed / (float)s_fadeLenMs;
+    const float e = t * t * (3.0f - 2.0f * t);
+    return mixRgb(s_fadeFrom, s_fadeTo, (uint8_t)(e * 255.0f + 0.5f));
+}
+
+// The colour on the strip now. *fading (when asked) says a fade is still
+// running, so the caller keeps drawing frames until it lands.
+static uint32_t ledShownColor(bool *fading = nullptr) {
+    const uint32_t now    = millis();
+    const uint32_t target = ledTargetColor();
+    if (!s_fadeStarted) {
+        s_fadeStarted = true;
+        s_fadeFrom = s_fadeTo = target;
+        s_fadeLenMs = 0;
+    }
+    if (target != s_fadeTo) {
+        const uint32_t from = fadeColorAt(now);      // mid-fade or settled
+        const bool cut = (s_cutPending && s_cutColor == target) || appState.ledFadeMs == 0;
+        s_cutPending  = false;
+        s_fadeFrom    = cut ? target : from;
+        s_fadeTo      = target;
+        s_fadeStartMs = now;
+        s_fadeLenMs   = cut ? 0 : appState.ledFadeMs;
+    }
+    if (s_fadeLenMs != 0 && now - s_fadeStartMs >= s_fadeLenMs) s_fadeLenMs = 0;   // landed
+    if (fading) *fading = (s_fadeLenMs != 0);
+    return fadeColorAt(now);
+}
+
+// A note over the Solid palette's glow (ledambient). The note rides on top of
+// the glow: its heat (0..255) spans the levels from the glow's `amb` up to full,
+// so even a soft note shows above the glow, and as the heat falls the LED eases
+// from the note's own colour (the colour shown when it was struck) into the
+// glow (the colour shown now), landing on it exactly at heat 0. With no glow it
+// is the note's colour at its heat, exactly as before 2.1.2.
+static CRGB noteOverGlow(CRGB note, uint8_t heat, uint8_t amb, uint32_t shown) {
+    if (amb == 0) { note.nscale8(heat); return note; }
+    const uint8_t level = (uint8_t)(amb + ((uint16_t)heat * (255u - amb)) / 255u);
+    CRGB c(mixRgb(shown, rgbOf(note), heat));
+    c.nscale8_video(level);
+    return c;
+}
+
+// Exactly six hex digits, any case: the value of `ledcolor` and `ledtint`.
+static bool parseRgbHex(const char *s, uint32_t *out) {
+    if (strlen(s) != 6) return false;
+    uint32_t v = 0;
+    for (int i = 0; i < 6; i++) {
+        const char c = s[i];
+        uint32_t d;
+        if (c >= '0' && c <= '9')      d = (uint32_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
+        else return false;
+        v = (v << 4) | d;
+    }
+    *out = v;
+    return true;
+}
+
+// A whole decimal number in [lo, hi], nothing after it.
+static bool parseLongIn(const char *s, long lo, long hi, long *out) {
+    char *end = nullptr;
+    const long v = strtol(s, &end, 10);
+    if (end == s || *end != '\0' || v < lo || v > hi) return false;
+    *out = v;
+    return true;
+}
+
 // Calibration marker: 'ledtest <note>' lights exactly the LED that note maps
 // to (bright white) for a few seconds, overriding the current mode, so you can
 // see whether that key's LED lines up and trim scale/offset until it does.
@@ -223,7 +342,7 @@ static int noteToLed(uint8_t note) {
 static CRGB reactiveColorFor(uint8_t note, uint8_t vel) {
     uint8_t pitchIdx = map(note, MIDI_NOTE_MIN, MIDI_NOTE_MAX, 0, 255);
     switch (appState.ledReactivePalette) {
-        case 1: return CRGB(appState.ledStaticColor);                       // solid
+        case 1: return CRGB(ledShownColor());     // solid: the colour shown at the strike, mid-fade too
         case 2: return CHSV(map(vel, 1, 127, 160, 0), 255, 255);            // velocity: soft blue → hard red
         case 3: return ColorFromPalette(HeatColors_p,   pitchIdx);          // fire
         case 4: return ColorFromPalette(OceanColors_p,  pitchIdx);          // ocean
@@ -517,7 +636,11 @@ static void updateLeds() {
         FastLED.show();
         return;
     }
-    if (s_ledTestIdx >= 0) { s_ledTestIdx = -1; clearLedReactive(); }
+    if (s_ledTestIdx >= 0) {
+        s_ledTestIdx = -1;
+        clearLedReactive();
+        s_ledForceFrame = true;   // the marker overwrote the strip: redraw a still colour or glow too
+    }
 
     // Skip redundant shows: at 300 LEDs each FastLED.show() is ~9 ms of
     // core-1 time. OFF and idle NOTE_REACTIVE frames are identical black
@@ -549,18 +672,21 @@ static void updateLeds() {
             // strip when the color or brightness actually changes — then it
             // just sits there lit at ZERO ongoing cost (no per-frame 9 ms
             // FastLED.show()). This is why "solid color" is essentially free
-            // vs. reactive, which must re-send every frame.
+            // vs. reactive, which must re-send every frame. While the colour
+            // cross-fades (ledfade) it changes every frame, so frames go out at
+            // the normal ~30 fps until it lands, then stop again.
+            const uint32_t shown = ledShownColor();
             static uint32_t s_lastStatic = 0xFFFFFFFF;
             static uint8_t  s_lastStaticBri = 255;
             if (!modeChanged &&
-                appState.ledStaticColor == s_lastStatic &&
+                shown == s_lastStatic &&
                 appState.ledBrightness == s_lastStaticBri) {
                 return;                       // unchanged → nothing to do
             }
-            s_lastStatic = appState.ledStaticColor;
+            s_lastStatic = shown;
             s_lastStaticBri = appState.ledBrightness;
             fill_solid(leds, LED_COUNT, CRGB::Black);
-            fill_solid(leds, ledUsable(), CRGB(appState.ledStaticColor));
+            fill_solid(leds, ledUsable(), CRGB(shown));
             FastLED.setBrightness(appState.ledBrightness);
             FastLED.show();
             return;                           // shown once; skip the tail show
@@ -582,27 +708,55 @@ static void updateLeds() {
         case LED_MODE_NOTE_REACTIVE: {
             uint8_t decay = appState.noteDecayRate;
             if (decay < 1) decay = 1;
-            hasContent = false;
             int n = ledUsable();            // tail LEDs stay dark (no solenoid there)
+            // The Solid palette's glow (ledambient, 2.1.2): the colour shown,
+            // along the whole keyed strip at a low level, the notes drawn over
+            // it and fading back down to it. 0 (and every other palette): black.
+            uint8_t amb = (appState.ledReactivePalette == 1) ? appState.ledAmbient : 0;
+            if (amb > LED_AMBIENT_MAX) amb = LED_AMBIENT_MAX;
+            bool fading = false;
+            const uint32_t shown = (amb > 0) ? ledShownColor(&fading) : 0;
+            CRGB glow(shown);
+            glow.nscale8_video(amb);        // black when amb is 0
+            bool moving = fading;           // the glow itself fades with the colour
             for (int i = 0; i < LED_COUNT; ++i) {
-                if (i < n && ledHeld[i] > 0) {
+                if (i >= n) {
+                    leds[i] = CRGB::Black;
+                } else if (ledHeld[i] > 0) {
                     // Key still held → keep the LED lit, DON'T fade (sustain).
                     if (noteHeat[i] == 0) noteHeat[i] = 255;   // ensure it's visible
-                    hasContent = true;
-                    CRGB c = noteColor[i];
-                    c.nscale8(noteHeat[i]);
-                    leds[i] = c;
-                } else if (i < n && noteHeat[i] > 0) {
-                    // Released → fade out from wherever it was.
-                    hasContent = true;
-                    CRGB c = noteColor[i];
-                    c.nscale8(noteHeat[i]);
-                    leds[i] = c;
+                    moving = true;
+                    leds[i] = noteOverGlow(noteColor[i], noteHeat[i], amb, shown);
+                } else if (noteHeat[i] > 0) {
+                    // Released → fade out from wherever it was, down to the glow.
+                    moving = true;
+                    leds[i] = noteOverGlow(noteColor[i], noteHeat[i], amb, shown);
                     noteHeat[i] = (noteHeat[i] > decay) ? noteHeat[i] - decay : 0;
                 } else {
-                    leds[i] = CRGB::Black;
+                    leds[i] = glow;         // black when there is no glow
                 }
             }
+            // While anything moves, a frame every pass. A still frame (the glow,
+            // or black) goes out once and then nothing until it changes: an idle
+            // strip costs no FastLED.show(), with or without the glow.
+            static bool     s_stillShown = false;
+            static uint32_t s_stillGlow  = 0;
+            static int      s_stillN     = -1;
+            static uint8_t  s_stillBri   = 0;
+            if (moving || modeChanged) {
+                s_stillShown = false;
+            }
+            if (!moving) {
+                if (s_stillShown && s_stillGlow == rgbOf(glow) && s_stillN == n &&
+                    s_stillBri == appState.ledBrightness) {
+                    return;                 // the same still frame is already out
+                }
+                s_stillShown = true;
+                s_stillGlow  = rgbOf(glow);
+                s_stillN     = n;
+                s_stillBri   = appState.ledBrightness;
+            }
+            hasContent = true;              // this mode skips its own still frames (above)
             break;
         }
         default:
@@ -744,6 +898,10 @@ static void printHelp() {
         "    velbright 0|1            note brightness follows how hard you play\n"
         "    decay <1..40>            note fade speed (higher = shorter linger)\n"
         "    rainspeed <1..40>        rainbow-mode scroll speed\n"
+        "    ledcolor <RRGGBB>        the strip's colour: static mode and the solid palette (saved)\n"
+        "    ledtint <RRGGBB|off>     a live colour over ledcolor until off or a restart (never saved)\n"
+        "    ledfade <0..5000>        ms the strip cross-fades when its colour changes (0 = cut)\n"
+        "    ledambient <0..64>       solid palette: the whole strip glows in the colour, notes on top\n"
         "    volume <0..100>          MASTER VOLUME - lower = softer whole piano\n"
         "    soft                     one-tap quiet preset (fullpower off + volume) + save\n"
         "    blereset                 clear stored BLE bonds (fixes \"must forget device\")\n"
@@ -828,6 +986,12 @@ static void printStatus() {
                        appState.ledGlow, appState.ledVelBright ? "on" : "off",
                        appState.noteDecayRate, appState.rainbowSpeed,
                        appState.ledTail, ledUsable());
+        char tint[8] = "off";
+        if (s_ledTint >= 0) snprintf(tint, sizeof(tint), "%06lx", (unsigned long)s_ledTint);
+        Console.printf("       colour=%06lx tint=%s fade=%u ms ambient=%u/%u (solid palette)\n",
+                       (unsigned long)(appState.ledStaticColor & 0xFFFFFF), tint,
+                       (unsigned)appState.ledFadeMs, (unsigned)appState.ledAmbient,
+                       (unsigned)LED_AMBIENT_MAX);
     }
     Console.printf("  pedal: %s  sustain=%s (CC64=%u)  pedalCCs=%lu\n",
                    g_pedalSeen ? "source SENDS pedal data"
@@ -1030,6 +1194,8 @@ static const SettingRow kSettingRows[] = {
     FACT_ROW("guest",      "%lu", (unsigned long)ble_lock_guest_seconds()),
     // The `restart` console command exists (docs/SMART_PLUG.md, 2.1.1).
     FACT_ROW("restartproto", "%d",  1),
+    // ledcolor / ledtint / ledfade / ledambient exist (docs/BLE_SETTINGS.md §4, 2.1.2).
+    FACT_ROW("ledcolorproto", "%d", 1),
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
@@ -1043,6 +1209,14 @@ static const SettingRow kSettingRows[] = {
     BOOL_ROW("velbright",   appState.ledVelBright),
     INT_ROW ("decay",       appState.noteDecayRate),
     INT_ROW ("rainspeed",   appState.rainbowSpeed),
+    // The colour shown (2.1.2): six lowercase hex digits; the tint reads `off` when unset.
+    { "ledcolor",   false, [](char *b, size_t n) {
+          snprintf(b, n, "%06lx", (unsigned long)(appState.ledStaticColor & 0xFFFFFF)); } },
+    { "ledtint",    false, [](char *b, size_t n) {
+          if (s_ledTint < 0) snprintf(b, n, "off");
+          else               snprintf(b, n, "%06lx", (unsigned long)s_ledTint); } },
+    INT_ROW ("ledfade",     appState.ledFadeMs),
+    INT_ROW ("ledambient",  appState.ledAmbient),
     INT_ROW ("dimsecs",     g_idleDimSecs),
     INT_ROW ("dimfloor",    g_idleDimFloor),
     BOOL_ROW("keyviz",      g_keyboardVizEnabled),
@@ -1229,6 +1403,7 @@ static void handleLine(char *line, ConsoleSource source) {
         g_humanizeVel   = 0;        // no random velocity scatter
         clearLedReactive();
         fill_solid(leds, LED_COUNT, CRGB::Black); FastLED.show();
+        s_ledForceFrame = true;     // whenever the strip is on again, draw the mode afresh
         settings_save();
         Console.println("  SNAPPY preset applied + saved: leds off, fullpower, gap 0, "
                         "minstrike 20, softrelease off, restrike off, humantime 0, humanvel 0 "
@@ -1429,6 +1604,7 @@ static void handleLine(char *line, ConsoleSource source) {
         int v = atoi(line + 5);
         g_ledsEnabled = (v != 0);
         if (!g_ledsEnabled) { clearLedReactive(); fill_solid(leds, LED_COUNT, CRGB::Black); FastLED.show(); }
+        else s_ledForceFrame = true;   // back on: a still colour or glow is drawn again, not left dark
         Console.printf("  LEDs = %s%s\n", g_ledsEnabled ? "ON" : "OFF",
                        g_ledsEnabled ? "" : " (no FastLED work — frees ~9ms/frame under load)");
     } else if (!strncmp(line, "ledmode ", 8)) {
@@ -1487,6 +1663,49 @@ static void handleLine(char *line, ConsoleSource source) {
         s_ledReactiveDirty = true;
         Console.printf("  ledtest: note %d (%s) → LED %d lit white for 4 s — align it under the key\n",
                        note, noteNameC((uint8_t)note), s_ledTestIdx);
+    } else if (!strncmp(line, "ledcolor ", 9)) {
+        // The strip's own colour (2.1.2): Static mode and the Solid palette.
+        // Saved as ledColor, the same value the screen's colour wheel sets.
+        uint32_t rgb;
+        if (!parseRgbHex(line + 9, &rgb)) { Console.println("  usage: ledcolor RRGGBB (6 hex digits)"); return; }
+        appState.ledStaticColor = rgb;
+        Console.printf("  LED colour = %06lx (static mode and the solid palette)%s\n",
+                       (unsigned long)rgb,
+                       s_ledTint >= 0 ? "; a tint shows over it until ledtint off" : "");
+    } else if (!strncmp(line, "ledtint ", 8)) {
+        // A live colour over ledcolor (2.1.2): the app's album-art colour. Never
+        // saved (save and the auto-save do not know it), gone at a restart.
+        const char *arg = line + 8;
+        uint32_t rgb;
+        if (!strcasecmp(arg, "off")) {
+            s_ledTint = -1;
+            Console.printf("  LED tint off: the strip shows ledcolor %06lx\n",
+                           (unsigned long)(appState.ledStaticColor & 0xFFFFFF));
+        } else if (parseRgbHex(arg, &rgb)) {
+            s_ledTint = (int32_t)rgb;
+            Console.printf("  LED tint = %06lx (live only, never saved; ledtint off returns to ledcolor)\n",
+                           (unsigned long)rgb);
+        } else {
+            Console.println("  usage: ledtint RRGGBB|off");
+            return;
+        }
+    } else if (!strncmp(line, "ledfade ", 8)) {
+        long v;
+        if (!parseLongIn(line + 8, 0, LED_FADE_MAX_MS, &v)) {
+            Console.printf("  ledfade out of range (0..%d ms)\n", LED_FADE_MAX_MS);
+            return;
+        }
+        appState.ledFadeMs = (uint16_t)v;
+        Console.printf("  LED fade = %ld ms whenever the colour changes%s\n", v, v == 0 ? " (0 = cut)" : "");
+    } else if (!strncmp(line, "ledambient ", 11)) {
+        long v;
+        if (!parseLongIn(line + 11, 0, LED_AMBIENT_MAX, &v)) {
+            Console.printf("  ledambient out of range (0..%d)\n", LED_AMBIENT_MAX);
+            return;
+        }
+        appState.ledAmbient = (uint8_t)v;
+        Console.printf("  LED ambient = %ld/255: with the solid palette the strip glows in its colour, notes on top%s\n",
+                       v, v == 0 ? " (0 = no glow)" : "");
     } else if (!strncmp(line, "ledglow ", 8)) {
         int v = atoi(line + 8);
         if (v < 0 || v > 10) { Console.println("  ledglow out of range (0..10)"); return; }

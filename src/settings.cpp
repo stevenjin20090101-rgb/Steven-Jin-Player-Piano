@@ -75,6 +75,11 @@ void settings_load() {
     appState.ledReactivePalette = p.getUChar ("reactPal",  DEFAULT_REACT_PALETTE);
     appState.ledGlow            = p.getUChar ("ledGlow",   DEFAULT_LED_GLOW);
     appState.ledVelBright       = p.getBool  ("ledVelBri", DEFAULT_LED_VELBRIGHT != 0);
+    // 2.1.2 (docs/BLE_SETTINGS.md §4). `ledtint` is never stored: it is live only.
+    appState.ledFadeMs          = p.getUShort("ledFade",   DEFAULT_LED_FADE_MS);
+    appState.ledAmbient         = p.getUChar ("ledAmbient", DEFAULT_LED_AMBIENT);
+    if (appState.ledFadeMs  > LED_FADE_MAX_MS) appState.ledFadeMs  = LED_FADE_MAX_MS;
+    if (appState.ledAmbient > LED_AMBIENT_MAX) appState.ledAmbient = LED_AMBIENT_MAX;
 
     appState.screenBrightness = p.getUChar("scrBri",  180);
     appState.ledBrightness    = p.getUChar("ledBri",  LED_DEFAULT_BRIGHTNESS);
@@ -145,6 +150,8 @@ void settings_save() {
     p.putUChar ("reactPal",  appState.ledReactivePalette);
     p.putUChar ("ledGlow",   appState.ledGlow);
     p.putBool  ("ledVelBri", appState.ledVelBright);
+    p.putUShort("ledFade",   appState.ledFadeMs);     // 2.1.2; ledtint is never saved
+    p.putUChar ("ledAmbient", appState.ledAmbient);
 
     p.putUChar("scrBri",  appState.screenBrightness);
     p.putUChar("ledBri",  appState.ledBrightness);
@@ -172,12 +179,12 @@ void settings_save() {
 struct SettingsSnap {
     uint32_t sweepPWM, minPWM, maxPWM, holdMs, retGapMs, minStrike, relMs,
              restrike, dimSecs, ledColor, isoStrike, isoGap, burstGap;
-    uint16_t pwmFreq, relPwm, ledCount, ledScale, pedalUp, pedalDn, minPWMBlk;
+    uint16_t pwmFreq, relPwm, ledCount, ledScale, pedalUp, pedalDn, minPWMBlk, ledFade;
     int16_t  ledOffset;
     float    velmult, velCurve;
     bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri,
              pedalOn, pedalHalf;
-    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs, dimFloor, burstBoost;
+    uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs, dimFloor, burstBoost, ledAmbient;
     float    keyForce[128];
 };
 static SettingsSnap s_snap;
@@ -205,6 +212,7 @@ static void takeSnap(SettingsSnap &s) {
     s.ledReverse = appState.ledReverse; s.reactPal = appState.ledReactivePalette;
     s.ledGlow = appState.ledGlow; s.ledVelBri = appState.ledVelBright;
     s.ledTail = appState.ledTail;
+    s.ledFade = appState.ledFadeMs; s.ledAmbient = appState.ledAmbient;   // never the tint
     s.volume = g_masterVolume; s.velCurve = g_velCurve;
     s.minPWMBlk = g_minStrikePWMBlack; s.dimFloor = g_idleDimFloor;
     s.burstGap = g_burstGapMs; s.burstBoost = g_burstBoostPct;

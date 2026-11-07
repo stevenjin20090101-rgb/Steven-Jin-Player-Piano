@@ -123,6 +123,7 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 | `freq <24..1526>` | PCA9685 PWM carrier (hum pitch) |
 | `hold <ms>` | Safety auto-release timeout (hard-capped at 4000 ms) |
 | `leds 0\|1` / `keyviz 0\|1` / `dimsecs <s>` | LED strip / key highlight / idle dim |
+| `ledcolor <RRGGBB>` `ledtint <RRGGBB\|off>` `ledfade <ms>` `ledambient <0..64>` | Strip colour (saved), a live colour over it (never saved), the cross-fade, the solid palette's glow — 2.1.2, [BLE_SETTINGS.md §4](docs/BLE_SETTINGS.md) |
 | `snappy` | One-shot lowest-latency preset (recommended for dense songs) |
 | `save` / `reset` | Persist now / factory-wipe settings |
 

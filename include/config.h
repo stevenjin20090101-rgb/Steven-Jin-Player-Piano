@@ -15,7 +15,7 @@
 // Firmware version, semver. Exactly ONE line of this form: tools/publish-firmware.sh
 // parses it. The full version string adds the git hash at build time
 // ("2.0.0+a1b2c3d", fw_version_full() in fw_info.h; docs/BLE_OTA.md §2).
-#define FW_VERSION "2.1.1"
+#define FW_VERSION "2.1.2"
 
 // ===========================================================================
 // BOARD REVISION SELECT — set this to match the PHYSICAL board connected.
@@ -88,6 +88,14 @@
 // brightness by how hard the key was hit.
 #define DEFAULT_LED_GLOW      1      // 0..10 neighbours each side
 #define DEFAULT_LED_VELBRIGHT 0      // 1 = brightness follows velocity
+// The colour shown (Static mode and the Solid palette, docs/BLE_SETTINGS.md §4,
+// 2.1.2): it cross-fades over `ledfade` ms whenever it changes, and in Reactive
+// with the Solid palette the whole keyed strip can glow in it at `ledambient`
+// (of 255, before ledbright; the cap keeps the glow's draw small).
+#define DEFAULT_LED_FADE_MS   1500   // 0..LED_FADE_MAX_MS, 0 = cut
+#define LED_FADE_MAX_MS       5000
+#define DEFAULT_LED_AMBIENT   0      // 0..LED_AMBIENT_MAX, 0 = no glow (the look before 2.1.2)
+#define LED_AMBIENT_MAX       64
 
 // LED strip 5 V supply budget for FastLED's power manager. With a dedicated
 // 5 A+ supply, 73 LEDs at full white (~4 A) fit comfortably, so full
@@ -344,6 +352,8 @@ struct AppState {
     uint8_t  ledReactivePalette;// 0..REACT_PALETTE_COUNT-1
     uint8_t  ledGlow;           // 0..10 neighbours lit each side of a note
     bool     ledVelBright;      // note brightness follows velocity
+    uint16_t ledFadeMs;         // 0..LED_FADE_MAX_MS: cross-fade when the colour shown changes
+    uint8_t  ledAmbient;        // 0..LED_AMBIENT_MAX: Solid palette glow under the notes
 
     InputMode inputMode;       // which sources are allowed to fire solenoids
     uint8_t   touchVelocity;   // 1..127, used when on-screen keys are tapped
@@ -364,3 +374,8 @@ void apply_screen_brightness(uint8_t value);
 //   velocity: 1..127 for NoteOn; ignored for NoteOff
 //   from_ble: true if originating from BLE MIDI callback, false if touch
 void note_input_enqueue(uint8_t on, uint8_t note, uint8_t velocity, bool from_ble);
+
+// The screen's colour wheel (ui.cpp): sets ledcolor like the `ledcolor`
+// command, but the strip shows it at once instead of fading, so the strip
+// keeps up with a dragging finger. Defined in main.cpp; safe from the LVGL task.
+void led_color_set_now(uint32_t rgb);
