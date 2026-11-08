@@ -1,11 +1,11 @@
 {
-  "version": "2.1.2",
-  "build": "d63bf5a",
-  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.2/firmware-2.1.2.bin",
-  "sizeBytes": 1143488,
-  "sha256": "ad34b7622ec6cf46c607066fc1937165461aebb4952bda8cc646d36e889b86ca",
-  "sig": "0sITk00cpF5K0MJKkG9EP/dmoGZ9dOVmmJTg0U0gXErYbpT7SurMwO3wFKiJjkfX4mb23XFlRfGeZiyEMTDgCA==",
+  "version": "2.1.3",
+  "build": "e256853",
+  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.3/firmware-2.1.3.bin",
+  "sizeBytes": 1144608,
+  "sha256": "7fb2fa201ff678602008281274ecd54b2936b733b498766af016946e6bfc2459",
+  "sig": "CuihdujKp04FNFnHkrSAuFgOpG5QBSj8gOB9uEV0Yq+KPYMVfhu/hl0NBHC+3JTYNcFUnsphfFMyJ1kji3iWBQ==",
   "minAppVersionCode": 35,
-  "notes": "The LED strip can take a colour from the app, such as the album art's, with smooth cross-fades, and glow softly under the notes in the Solid palette.",
+  "notes": "Between pieces the strip glows solid in the colour shown, and fades to the notes when a piece plays.",
   "usbOnly": false
 }
