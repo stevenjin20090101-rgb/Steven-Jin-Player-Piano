@@ -77,6 +77,9 @@ void ble_lock_handle_usb(const char *line);
 void ble_lock_set_asker(uint16_t conn, uint16_t gen);
 void ble_lock_clear_asker();
 bool ble_lock_asker_trusted();
+// The Bluetooth connection the console is serving now (false for USB): the
+// (handle, generation) a live setting such as `ledrest` ends with (2.1.3).
+bool ble_lock_asker(uint16_t *conn, uint16_t *gen);
 
 // dump / get facts (docs/BLE_SETTINGS.md §4): !lock, !nonce, !guest (!auth is
 // ble_lock_asker_trusted()). The nonce is the asker's, made on first ask; USB

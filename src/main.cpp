@@ -252,15 +252,81 @@ static uint32_t ledShownColor(bool *fading = nullptr) {
     return fadeColorAt(now);
 }
 
-// A note over the Solid palette's glow (ledambient). The note rides on top of
-// the glow: its heat (0..255) spans the levels from the glow's `amb` up to full,
-// so even a soft note shows above the glow, and as the heat falls the LED eases
-// from the note's own colour (the colour shown when it was struck) into the
-// glow (the colour shown now), landing on it exactly at heat 0. With no glow it
-// is the note's colour at its heat, exactly as before 2.1.2.
-static CRGB noteOverGlow(CRGB note, uint8_t heat, uint8_t amb, uint32_t shown) {
-    if (amb == 0) { note.nscale8(heat); return note; }
-    const uint8_t level = (uint8_t)(amb + ((uint16_t)heat * (255u - amb)) / 255u);
+// ---- At rest between pieces: ledrest (2.1.3) --------------------------------
+// The app sends `ledrest 1` when a piece ends and `ledrest 0` as the next one
+// starts. In Reactive mode 1 lifts the colour shown (above) to full along the
+// whole keyed strip — Static's look — and 0 lets it down to the glow
+// (ledambient) or to dark, eased over `ledfade` from wherever it is, so a change
+// in the middle of a fade carries on without a jump. Live only, like ledtint:
+// save and the auto-save never see it, 0 at boot. Set over Bluetooth it ends
+// with the link that set it (the tablet gone, or guest play on an iPad, shows
+// notes as before 2.1.3); set over USB it lasts until a restart. Other modes
+// keep it and ignore it. Loop task only: the console and updateLeds().
+static bool     s_ledRest       = false;
+static bool     s_ledRestBle    = false;   // set over Bluetooth: ends with that link
+static uint16_t s_ledRestConn   = 0xFFFF;
+static uint16_t s_ledRestGen    = 0;
+static uint8_t  s_restFrom      = 0;       // the rest level when this fade began
+static uint8_t  s_restTo        = 0;       // 0 or 255
+static uint32_t s_restStartMs   = 0;
+static uint16_t s_restLenMs     = 0;       // this fade's length (0: no fade running)
+
+static void ledRestSet(bool on, ConsoleSource source) {
+    s_ledRest    = on;
+    uint16_t conn = 0xFFFF, gen = 0;
+    s_ledRestBle = (source == SRC_BLE) && ble_lock_asker(&conn, &gen);
+    s_ledRestConn = conn;
+    s_ledRestGen  = gen;
+}
+
+// The link that set ledrest has gone (or the line came from a writer already
+// gone): back to 0, with the fade. Every loop pass that draws, any mode.
+static void ledRestCheckLink() {
+    if (!s_ledRest || !s_ledRestBle) return;
+    if (s_ledRestGen != 0 && ble_lock_conn_gen(s_ledRestConn) == s_ledRestGen) return;
+    s_ledRest    = false;
+    s_ledRestBle = false;
+    Serial.println("[led] ledrest 0: the Bluetooth link that set it has gone");
+}
+
+static uint8_t restLevelAt(uint32_t now) {
+    const uint32_t elapsed = now - s_restStartMs;
+    if (s_restLenMs == 0 || elapsed >= s_restLenMs) return s_restTo;
+    const float t = (float)elapsed / (float)s_restLenMs;
+    const float e = t * t * (3.0f - 2.0f * t);
+    return (uint8_t)((float)s_restFrom + ((float)s_restTo - (float)s_restFrom) * e + 0.5f);
+}
+
+// The rest layer's level now, 0..255. `snap` (a mode switch or a forced
+// redraw) lands it on its target at once, as every mode switch does.
+static uint8_t ledRestLevel(bool snap, bool *fading) {
+    const uint32_t now    = millis();
+    const uint8_t  target = s_ledRest ? 255 : 0;
+    if (snap) {
+        s_restFrom = s_restTo = target;
+        s_restLenMs = 0;
+    } else if (target != s_restTo) {
+        const uint8_t from = restLevelAt(now);       // mid-fade or settled
+        s_restFrom    = (appState.ledFadeMs == 0) ? target : from;
+        s_restTo      = target;
+        s_restStartMs = now;
+        s_restLenMs   = appState.ledFadeMs;
+    }
+    if (s_restLenMs != 0 && now - s_restStartMs >= s_restLenMs) s_restLenMs = 0;   // landed
+    if (fading) *fading = (s_restLenMs != 0);
+    return restLevelAt(now);
+}
+
+// A note over the base layer: the Solid palette's glow (ledambient) and, from
+// 2.1.3, the rest layer. `base` is that layer's level. The note rides on top:
+// its heat (0..255) spans the levels from `base` up to full (never above), so
+// even a soft note shows over it, and as the heat falls the LED eases from the
+// note's own colour (for Solid, the colour shown when it was struck) into the
+// layer (the colour shown now), landing on it exactly at heat 0. With no base
+// it is the note's colour at its heat, exactly as before 2.1.2.
+static CRGB noteOverGlow(CRGB note, uint8_t heat, uint8_t base, uint32_t shown) {
+    if (base == 0) { note.nscale8(heat); return note; }
+    const uint8_t level = (uint8_t)(base + ((uint16_t)heat * (255u - base)) / 255u);
     CRGB c(mixRgb(shown, rgbOf(note), heat));
     c.nscale8_video(level);
     return c;
@@ -612,6 +678,8 @@ static bool s_ledsDarkForUpdate = false;   // the black frame of this session is
 static bool s_ledForceFrame     = false;   // next updateLeds(): push the current mode
 
 static void updateLeds() {
+    ledRestCheckLink();      // ledrest ends with its link, whatever the strip is doing
+
     // Master kill-switch: when off, do NO FastLED work at all. This removes
     // the ~9 ms/frame WS2812 output block that competes with note dispatch
     // and the BLE stack during dense passages — the top suspect for
@@ -709,16 +777,20 @@ static void updateLeds() {
             uint8_t decay = appState.noteDecayRate;
             if (decay < 1) decay = 1;
             int n = ledUsable();            // tail LEDs stay dark (no solenoid there)
-            // The Solid palette's glow (ledambient, 2.1.2): the colour shown,
-            // along the whole keyed strip at a low level, the notes drawn over
-            // it and fading back down to it. 0 (and every other palette): black.
+            // The base layer under the notes: the colour shown, along the whole
+            // keyed strip. Its level is the Solid palette's glow (ledambient,
+            // 2.1.2; 0 with every other palette, black) lifted toward full by the
+            // rest layer (ledrest, 2.1.3): full at rest is Static's look.
             uint8_t amb = (appState.ledReactivePalette == 1) ? appState.ledAmbient : 0;
             if (amb > LED_AMBIENT_MAX) amb = LED_AMBIENT_MAX;
-            bool fading = false;
-            const uint32_t shown = (amb > 0) ? ledShownColor(&fading) : 0;
+            bool restFading = false;
+            const uint8_t rest = ledRestLevel(modeChanged, &restFading);
+            const uint8_t base = (uint8_t)(amb + ((uint16_t)rest * (255u - amb)) / 255u);
+            bool colourFading = false;
+            const uint32_t shown = (base > 0) ? ledShownColor(&colourFading) : 0;
             CRGB glow(shown);
-            glow.nscale8_video(amb);        // black when amb is 0
-            bool moving = fading;           // the glow itself fades with the colour
+            glow.nscale8_video(base);       // black when base is 0; exactly `shown` at 255
+            bool moving = restFading || colourFading;   // the layer itself fades
             for (int i = 0; i < LED_COUNT; ++i) {
                 if (i >= n) {
                     leds[i] = CRGB::Black;
@@ -726,11 +798,11 @@ static void updateLeds() {
                     // Key still held → keep the LED lit, DON'T fade (sustain).
                     if (noteHeat[i] == 0) noteHeat[i] = 255;   // ensure it's visible
                     moving = true;
-                    leds[i] = noteOverGlow(noteColor[i], noteHeat[i], amb, shown);
+                    leds[i] = noteOverGlow(noteColor[i], noteHeat[i], base, shown);
                 } else if (noteHeat[i] > 0) {
                     // Released → fade out from wherever it was, down to the glow.
                     moving = true;
-                    leds[i] = noteOverGlow(noteColor[i], noteHeat[i], amb, shown);
+                    leds[i] = noteOverGlow(noteColor[i], noteHeat[i], base, shown);
                     noteHeat[i] = (noteHeat[i] > decay) ? noteHeat[i] - decay : 0;
                 } else {
                     leds[i] = glow;         // black when there is no glow
@@ -900,8 +972,9 @@ static void printHelp() {
         "    rainspeed <1..40>        rainbow-mode scroll speed\n"
         "    ledcolor <RRGGBB>        the strip's colour: static mode and the solid palette (saved)\n"
         "    ledtint <RRGGBB|off>     a live colour over ledcolor until off or a restart (never saved)\n"
-        "    ledfade <0..5000>        ms the strip cross-fades when its colour changes (0 = cut)\n"
+        "    ledfade <0..5000>        ms the strip cross-fades when its colour or rest changes (0 = cut)\n"
         "    ledambient <0..64>       solid palette: the whole strip glows in the colour, notes on top\n"
+        "    ledrest 0|1              reactive: 1 = the colour solid between pieces (live, never saved)\n"
         "    volume <0..100>          MASTER VOLUME - lower = softer whole piano\n"
         "    soft                     one-tap quiet preset (fullpower off + volume) + save\n"
         "    blereset                 clear stored BLE bonds (fixes \"must forget device\")\n"
@@ -988,10 +1061,11 @@ static void printStatus() {
                        appState.ledTail, ledUsable());
         char tint[8] = "off";
         if (s_ledTint >= 0) snprintf(tint, sizeof(tint), "%06lx", (unsigned long)s_ledTint);
-        Console.printf("       colour=%06lx tint=%s fade=%u ms ambient=%u/%u (solid palette)\n",
+        Console.printf("       colour=%06lx tint=%s fade=%u ms ambient=%u/%u (solid palette) rest=%s\n",
                        (unsigned long)(appState.ledStaticColor & 0xFFFFFF), tint,
                        (unsigned)appState.ledFadeMs, (unsigned)appState.ledAmbient,
-                       (unsigned)LED_AMBIENT_MAX);
+                       (unsigned)LED_AMBIENT_MAX,
+                       !s_ledRest ? "0" : (s_ledRestBle ? "1 (Bluetooth)" : "1 (USB)"));
     }
     Console.printf("  pedal: %s  sustain=%s (CC64=%u)  pedalCCs=%lu\n",
                    g_pedalSeen ? "source SENDS pedal data"
@@ -1196,6 +1270,8 @@ static const SettingRow kSettingRows[] = {
     FACT_ROW("restartproto", "%d",  1),
     // ledcolor / ledtint / ledfade / ledambient exist (docs/BLE_SETTINGS.md §4, 2.1.2).
     FACT_ROW("ledcolorproto", "%d", 1),
+    // ledrest exists (docs/BLE_SETTINGS.md §4, 2.1.3).
+    FACT_ROW("ledrestproto",  "%d", 1),
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
@@ -1217,6 +1293,7 @@ static const SettingRow kSettingRows[] = {
           else               snprintf(b, n, "%06lx", (unsigned long)s_ledTint); } },
     INT_ROW ("ledfade",     appState.ledFadeMs),
     INT_ROW ("ledambient",  appState.ledAmbient),
+    BOOL_ROW("ledrest",     s_ledRest),           // 2.1.3: live only, never saved
     INT_ROW ("dimsecs",     g_idleDimSecs),
     INT_ROW ("dimfloor",    g_idleDimFloor),
     BOOL_ROW("keyviz",      g_keyboardVizEnabled),
@@ -1696,7 +1773,7 @@ static void handleLine(char *line, ConsoleSource source) {
             return;
         }
         appState.ledFadeMs = (uint16_t)v;
-        Console.printf("  LED fade = %ld ms whenever the colour changes%s\n", v, v == 0 ? " (0 = cut)" : "");
+        Console.printf("  LED fade = %ld ms whenever the colour or the rest look changes%s\n", v, v == 0 ? " (0 = cut)" : "");
     } else if (!strncmp(line, "ledambient ", 11)) {
         long v;
         if (!parseLongIn(line + 11, 0, LED_AMBIENT_MAX, &v)) {
@@ -1706,6 +1783,20 @@ static void handleLine(char *line, ConsoleSource source) {
         appState.ledAmbient = (uint8_t)v;
         Console.printf("  LED ambient = %ld/255: with the solid palette the strip glows in its colour, notes on top%s\n",
                        v, v == 0 ? " (0 = no glow)" : "");
+    } else if (!strncmp(line, "ledrest ", 8)) {
+        // Between pieces (2.1.3): Reactive shows the colour shown solid along
+        // the keyed strip, fading to the notes at 0. Never saved; over
+        // Bluetooth it ends with the link that set it, over USB at a restart.
+        const char *arg = line + 8;
+        if (strcmp(arg, "0") != 0 && strcmp(arg, "1") != 0) {
+            Console.println("  usage: ledrest 0|1");
+            return;
+        }
+        ledRestSet(arg[0] == '1', source);
+        Console.printf("  LED rest = %c (live only, never saved; %s)%s\n", arg[0],
+                       s_ledRestBle ? "ends with this Bluetooth link" : "until a restart",
+                       appState.ledMode == LED_MODE_NOTE_REACTIVE ? ""
+                           : "; it shows in reactive mode only");
     } else if (!strncmp(line, "ledglow ", 8)) {
         int v = atoi(line + 8);
         if (v < 0 || v > 10) { Console.println("  ledglow out of range (0..10)"); return; }

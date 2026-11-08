@@ -626,6 +626,13 @@ bool ble_lock_asker_trusted() {
     return !s_askerSet || ble_lock_trusted(s_askerConn, s_askerGen);
 }
 
+bool ble_lock_asker(uint16_t *conn, uint16_t *gen) {
+    if (!s_askerSet) return false;
+    if (conn) *conn = s_askerConn;
+    if (gen)  *gen  = s_askerGen;
+    return true;
+}
+
 const char *ble_lock_state_word() {
     if (!ble_lock_claimed()) return "open";
     return windowActive(millis()) ? "pairing" : "claimed";

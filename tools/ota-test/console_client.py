@@ -37,7 +37,7 @@ EXPECTED_DUMP_NAMES = [
     "!proto", "!fw", "!ota", "!ble", "!boards", "!i2cfails", "!pedalboard", "!uptime",
     "leds", "ledmode", "ledbright", "ledcount", "ledoffset", "ledscale", "ledtail",
     "ledreverse", "reactcolor", "ledglow", "velbright", "decay", "rainspeed",
-    "ledcolor", "ledtint", "ledfade", "ledambient", "dimsecs",
+    "ledcolor", "ledtint", "ledfade", "ledambient", "ledrest", "dimsecs",
     "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velmult", "min", "minblack",
     "max", "humanvel", "humantime", "burstgap", "burstboost", "minstrike", "isostrike",
     "isogap", "gap", "hold", "restrike", "softrelease", "releasepwm", "releasems", "freq",

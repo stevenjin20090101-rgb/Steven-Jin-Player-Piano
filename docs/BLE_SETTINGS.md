@@ -136,6 +136,7 @@ Read-only facts are prefixed `!`. Exact list and order:
 !guest=<seconds left>               (guest play; 0 = off)
 !restartproto=1                     (the `restart` command exists, §5, from 2.1.1)
 !ledcolorproto=1                    (ledcolor, ledtint, ledfade and ledambient exist, from 2.1.2)
+!ledrestproto=1                     (ledrest exists, from 2.1.3)
 leds=0|1
 ledmode=0..3
 ledbright=0..255
@@ -153,6 +154,7 @@ ledcolor=<6 lowercase hex digits, RRGGBB>
 ledtint=off|<6 lowercase hex digits>
 ledfade=0..5000
 ledambient=0..64
+ledrest=0|1
 dimsecs=0..3600
 dimfloor=0..255
 keyviz=0|1
@@ -239,6 +241,27 @@ Nothing in the solenoid path changes.
 Refusals (§5's wording): `  usage: ledcolor RRGGBB (6 hex digits)`, `  usage: ledtint RRGGBB|off`,
 `  ledfade out of range (0..5000 ms)`, `  ledambient out of range (0..64)`.
 
+**At rest between pieces** (added 2026-11-08 for 2.1.3, the app's M81; `!ledrestproto=1` follows
+`!ledcolorproto`). One live key, listed after `ledambient`:
+
+- `ledrest 0|1` — Reactive mode (`ledmode=3`) only: 1 shows the whole keyed strip solid in the colour shown
+  (`ledtint` while set, else `ledcolor`) at full level (255 before `ledbright`) — Static's look, inside
+  Reactive; 0 is Reactive as before 2.1.3. The app sends 1 when a piece ends and 0 as the next one starts.
+  **Never saved**, like `ledtint`: `save` and the 30 s auto-save do not know it, and it is 0 at boot. Set over
+  Bluetooth it **ends with the link that set it**: when that connection drops (the tablet gone, or letting go
+  for guest play), it goes back to 0 with the fade, so another device's notes show as before. Set over USB it
+  lasts until a restart or `ledrest 0`. The last writer owns it. Rainbow, Static and Off keep it and ignore it.
+
+The change either way fades over `ledfade`, eased, from what the strip shows at that moment: from solid down to
+the glow (`ledambient`, Solid palette) or to dark, and back up; a change in the middle of a fade starts from where
+it is, and `ledfade 0` is a cut. A colour change at rest (a new `ledtint`) cross-fades as above. A mode switch
+into Reactive shows the rest state at once, as every mode switch does. Notes during the fade ride on top of the
+layer as they do on the glow, a note's level from the layer's up to full, never above; with the other palettes
+the palette's notes draw over the rest colour as it fades out. Cost: at rest the strip draws what Static draws
+(the keyed LEDs at `ledbright`), never more; a still rest layer pushes one frame when its fade lands, and a fade
+pushes frames at the normal ~30 fps until it lands. Nothing in the solenoid path, the watchdogs or the safety
+layers changes. Refusal: `  usage: ledrest 0|1`.
+
 **`get <name>`** prints the single `name=value` line for any name in the list above
 (including the `!` facts), or `  unknown setting` for anything else. The name may be given
 with or without its `!`; a fact is always answered as `!name=value` (`get fw` and
@@ -292,7 +315,7 @@ not shown as refusals by the app: `testmin`/`testmax` on a key whose power board
 
 ## 6. Persistence and side effects (unchanged, but the app relies on them)
 
-- The 30-second auto-save persists changes (never `ledtint`, which is live only); the four presets save immediately. The app
+- The 30-second auto-save persists changes (never `ledtint` or `ledrest`, which are live only); the four presets save immediately. The app
   sends `save` when the user leaves its settings screen after changing something, so a
   piano powered off within 30 s still keeps the change.
 - `volume` below 100 turns Full Power off; `panic` turns it on; `hold` clamps to
