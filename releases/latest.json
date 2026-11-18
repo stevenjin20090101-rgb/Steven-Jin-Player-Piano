@@ -1,11 +1,11 @@
 {
-  "version": "2.1.4",
-  "build": "fc1b9b0",
-  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.4/firmware-2.1.4.bin",
-  "sizeBytes": 1143168,
-  "sha256": "64d9e9e712189585333a94fa6b7a365e5f6915fbb410c574ed0b694f954d36c7",
-  "sig": "chFgirh0P1XuLWYmQ0eNuNyNleNtVME5It8T4FoYNoYIzkwvdRhuv0VTGQTcQkW9uapyILTKEsof7jIq6+wJBw==",
+  "version": "2.1.5",
+  "build": "98d7303",
+  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.5/firmware-2.1.5.bin",
+  "sizeBytes": 1146576,
+  "sha256": "624e9ec5ce73be4e0dbfb03f0f2afe5c16fc7613118c7481abda94017de0f744",
+  "sig": "9r9JfasIRrwyQ702HliJJ0SayuOHqkD0LL8AGgkBeo6o/KAYSFZknxnkDxvSk9lXrWQZQqqkMI9n8hlTazuqCA==",
   "minAppVersionCode": 35,
-  "notes": "Soft release removed: every key-up is now a plain cut, which stops the keys crashing. The album-art LED colour is unchanged.",
+  "notes": "Distinct loudness steps: each note snaps to one of a few clearly different soft-to-loud steps, ready for the tablet's listening calibration. Nothing changes on a piano until its calibration runs.",
   "usbOnly": false
 }
