@@ -200,7 +200,7 @@ static int scenarioInhibit() {
     at(0);
     manualFire(3, 0, 4096);          // A: serial "fire", not held — the hold watchdog's to release
     dispatchNoteOn(62, 100);         // B: held, re-struck every 300 ms — the lift releases it
-    dispatchNoteOn(65, 100);         // D: NoteOff while inhibited — must skip the cushion
+    dispatchNoteOn(65, 100);         // D: NoteOff while inhibited — straight to the verified OFF
     at(90);  dispatchNoteOn(67, 100);         // E: NoteOff deferred by min-strike, runs inhibited
     at(95);  manualFireNote(64, 3000);        // C: allKeysOff()'s to release
     at(100);
@@ -247,12 +247,12 @@ static int scenarioInhibit() {
     expect(offAtRel(0) == 2050, "A: released by the hold watchdog once its glitched OFF retried through");
     expect(offAtRel(1) == 300 && chipFor(0x43)->strikes[1] == 1, "B: lifted by the re-strike tick, the re-strike refused");
     expect(offAtRel(2) == 2082, "C: released by allKeysOff()");
-    expect(offAtRel(3) == 150 && offAtRel(4) == 150, "D, E: straight to the verified OFF, no cushion");
+    expect(offAtRel(3) == 150 && offAtRel(4) == 150, "D, E: straight to the verified OFF");
     expect(lateFalse == 0, "true from the stop on, refused NoteOns queue nothing");
     expect(lastEnergizeMs() == last0, "refused energizes leave lastEnergizeMs() alone");
     expect(!anyChannelOn() && coilsVerifiedOff() && energize_inhibited(), "all off, verified, still inhibited");
     char s[200];
-    snprintf(s, sizeof s, "refused=%d/%d sweeps_refused=%d energize_writes_after=%d  A_off=+%u(watchdog) B_off=+%u(lift) C_off=+%u(allKeysOff) D,E_off=+%u(no cushion)",
+    snprintf(s, sizeof s, "refused=%d/%d sweeps_refused=%d energize_writes_after=%d  A_off=+%u(watchdog) B_off=+%u(lift) C_off=+%u(allKeysOff) D,E_off=+%u(verified OFF)",
              refused, attempts, sweeps, g_nonZeroWrites - writes0, offAtRel(0), offAtRel(1), offAtRel(2), offAtRel(3));
     return hookResult("inhibit", s);
 }
@@ -300,13 +300,14 @@ static int scenarioVerifiedOff() {
     return hookResult("verified_off", s);
 }
 
-// Every coil verified off, yet something is still queued: a deferred strike, a
-// cushion the watchdog overtook, a held note between re-strikes. Each keeps
-// coilsVerifiedOff() false until it is cleared.
+// Every coil verified off, yet something is still queued or owed: a deferred
+// strike, an OFF write that failed, a held note between re-strikes. Each keeps
+// coilsVerifiedOff() false until it is cleared. (2.1.4: a release writes no
+// current — the soft-release cushion is gone — so it stamps nothing.)
 static int scenarioVerifiedOffPending() {
     at(0);    dispatchNoteOn(60, 100);
-    at(200);  dispatchNoteOff(60);            // cushion until +222
-    at(210);  dispatchNoteOn(60, 100);        // repeat during the cushion: cut now, strike deferred to +240
+    at(200);  dispatchNoteOff(60);            // plain cut at +200
+    at(210);  dispatchNoteOn(60, 100);        // repeat inside the gap: strike deferred to +230
     at(215);  dispatchNoteOff(60);            // its release queued behind the deferred strike
     at(216);  expect(!chOn(0) && !coilsVerifiedOff(), "deferred strike pending, every coil off: false");
     at(220);  allKeysOff();
@@ -314,12 +315,13 @@ static int scenarioVerifiedOffPending() {
     at(400);  expect(chipFor(0x43)->strikes[0] == 1, "the cleared strike never fired");
 
     at(500);  dispatchNoteOn(60, 100);        // hold deadline +2500
-    at(2490); dispatchNoteOff(60);            // cushion until +2512 ...
-    expect(lastEnergizeMs() == T0 + 2490, "the cushion write stamps lastEnergizeMs() though the anchor stays +500");
-    at(2505); expect(!chOn(0) && !coilsVerifiedOff(), "watchdog cut at +2500, cushion still pending: false");
-    g_failOffFrom = T0 + 2515; g_failOffTo = T0 + 2525;   // ... and the cushion's own OFF at +2520 glitches
-    at(2521); expect(!chOn(0) && !coilsVerifiedOff(), "an OFF write still owed (s_needOff), timers clear: false");
-    at(2531); expect(coilsVerifiedOff(), "its retry landed at +2530: true");
+    const int writesBeforeOff = g_nonZeroWrites;
+    g_failOffFrom = T0 + 1485; g_failOffTo = T0 + 1495;   // the release's OFF write glitches
+    at(1490); dispatchNoteOff(60);
+    expect(g_nonZeroWrites == writesBeforeOff, "a release writes no current (no cushion)");
+    expect(lastEnergizeMs() == T0 + 500, "a release stamps nothing: lastEnergizeMs() stays at the strike");
+    at(1491); expect(chOn(0) && !coilsVerifiedOff(), "the OFF write failed, still owed (s_needOff): false");
+    at(1600); expect(!chOn(0) && coilsVerifiedOff(), "its retry landed after the glitch: true");
 
     at(2600); g_restrikeMs = 300;
     at(3000); dispatchNoteOn(60, 100);        // held; lifted at +3300, re-struck at +3340
@@ -327,7 +329,7 @@ static int scenarioVerifiedOffPending() {
     at(3400); dispatchNoteOff(60);
     at(3480); expect(coilsVerifiedOff(), "released: true");
     at(4000); expect(!anyChannelOn(), "all off");
-    return hookResult("verified_off_pending", "deferred strike: false until the stop  cushion after a watchdog cut: false until it completes  owed OFF retry: false until it lands  held in lift gap: false");
+    return hookResult("verified_off_pending", "deferred strike: false until the stop  release writes no current  owed OFF retry: false until it lands  held in lift gap: false");
 }
 
 // The bring-up sweep (SAFETY.md rule 3): every strike arms the hold watchdog
@@ -435,8 +437,8 @@ int main(int argc, char** argv) {
     if (sc == "rapid") {                 // same key: onsets every 40 ms, notes 20 ms long, for 10 s
         for (uint32_t t = 0; t < 10000; t += 40) { ev.push_back({t, 1, 60, 100}); ev.push_back({t + 20, 0, 60, 0}); }
         runEvents(ev, 13000); return report(sc.c_str(), 100, 250);
-    } else if (sc == "rapid_snappy") {   // "snappy" preset (gap 0, minstrike 20, no cushion): onsets 15 ms, notes 5 ms
-        g_minRetriggerGapMs = 0; g_minStrikeMs = 20; g_softRelease = false;
+    } else if (sc == "rapid_snappy") {   // "snappy" preset (gap 0, minstrike 20): onsets 15 ms, notes 5 ms
+        g_minRetriggerGapMs = 0; g_minStrikeMs = 20;
         for (uint32_t t = 0; t < 5000; t += 15) { ev.push_back({t, 1, 60, 100}); ev.push_back({t + 5, 0, 60, 0}); }
         runEvents(ev, 8000); return report(sc.c_str(), 100, 340);
     } else if (sc == "rapid_failoff") {  // rapid pattern, and the first lift's OFF write glitches for 20 ms
@@ -449,7 +451,7 @@ int main(int argc, char** argv) {
     } else if (sc == "short_repeat") {   // two short notes back to back: both must sound
         ev = {{0, 1, 60, 100}, {20, 0, 60, 0}, {40, 1, 60, 100}, {60, 0, 60, 0}};
         runEvents(ev, 1000); return report(sc.c_str(), 2, 2);
-    } else if (sc == "case1_gap") {      // existing deferral: retrigger during the cushion + NoteOff before the deferred fire
+    } else if (sc == "case1_gap") {      // existing deferral: retrigger inside the gap + NoteOff before the deferred fire
         ev = {{0, 1, 60, 100}, {100, 0, 60, 0}, {110, 1, 60, 100}, {115, 0, 60, 0}};
         runEvents(ev, 1000); return report(sc.c_str(), 2, 2);
     } else if (sc == "manual_refire") {  // serial "fire" re-issued every 500 ms with no OFF: ceiling must still trip
@@ -468,7 +470,7 @@ int main(int argc, char** argv) {
         return scenarioInhibit();
     } else if (sc == "verified_off") {   // coilsVerifiedOff() waits for a VERIFIED OFF; lastEnergizeMs()
         return scenarioVerifiedOff();
-    } else if (sc == "verified_off_pending") {   // queued strike / cushion / held note keep it false
+    } else if (sc == "verified_off_pending") {   // queued strike / owed OFF / held note keep it false
         return scenarioVerifiedOffPending();
     } else if (sc == "sweep") {          // the bring-up sweep: armed strikes, verified releases
         return scenarioSweep();

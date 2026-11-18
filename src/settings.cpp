@@ -56,9 +56,8 @@ void settings_load() {
     g_burstBoostPct     = p.getUChar ("burstBoost", DEFAULT_BURST_BOOST);
     g_waterfallEnabled  = p.getBool("waterfall", DEFAULT_WATERFALL_ENABLED != 0);
     g_keyboardVizEnabled = p.getBool("keyviz", true);
-    g_softRelease       = p.getBool("softRel",  DEFAULT_SOFT_RELEASE != 0);
-    g_releasePwm        = p.getUShort("relPwm", DEFAULT_RELEASE_PWM);
-    g_releaseMs         = p.getUInt("relMs",    DEFAULT_RELEASE_MS);
+    // softRel / relPwm / relMs: soft release was removed in 2.1.4. Their old
+    // NVS values stay where they are (never erased) and are no longer read.
     g_ledsEnabled       = p.getBool("leds",     DEFAULT_LEDS_ENABLED != 0);
     g_restrikeMs        = p.getUInt("restrike", DEFAULT_RESTRIKE_MS);
     g_idleDimSecs       = p.getUInt("dimSecs",  DEFAULT_IDLE_DIM_SECS);
@@ -131,9 +130,6 @@ void settings_save() {
     p.putUChar ("burstBoost", g_burstBoostPct);
     p.putBool  ("waterfall", g_waterfallEnabled);
     p.putBool  ("keyviz",    g_keyboardVizEnabled);
-    p.putBool  ("softRel",   g_softRelease);
-    p.putUShort("relPwm",    g_releasePwm);
-    p.putUInt  ("relMs",     g_releaseMs);
     p.putBool  ("leds",      g_ledsEnabled);
     p.putUInt  ("restrike",  g_restrikeMs);
     p.putUInt  ("dimSecs",   g_idleDimSecs);
@@ -177,12 +173,12 @@ void settings_save() {
 // the 512-byte blob compare still cost ms; a memcmp costs microseconds.
 // It also avoids the rare multi-10ms flash-compaction stall mid-song.)
 struct SettingsSnap {
-    uint32_t sweepPWM, minPWM, maxPWM, holdMs, retGapMs, minStrike, relMs,
+    uint32_t sweepPWM, minPWM, maxPWM, holdMs, retGapMs, minStrike,
              restrike, dimSecs, ledColor, isoStrike, isoGap, burstGap;
-    uint16_t pwmFreq, relPwm, ledCount, ledScale, pedalUp, pedalDn, minPWMBlk, ledFade;
+    uint16_t pwmFreq, ledCount, ledScale, pedalUp, pedalDn, minPWMBlk, ledFade;
     int16_t  ledOffset;
     float    velmult, velCurve;
-    bool     fullpower, waterfall, keyviz, softRel, leds, ledReverse, ledVelBri,
+    bool     fullpower, waterfall, keyviz, leds, ledReverse, ledVelBri,
              pedalOn, pedalHalf;
     uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs, dimFloor, burstBoost, ledAmbient;
     float    keyForce[128];
@@ -196,12 +192,12 @@ static void takeSnap(SettingsSnap &s) {
     s.maxPWM = g_maxStrikePWM;     s.holdMs = g_maxHoldMs;
     s.retGapMs = g_minRetriggerGapMs; s.minStrike = g_minStrikeMs;
     s.isoStrike = g_isoStrikeMs; s.isoGap = g_isoGapMs;
-    s.relMs = g_releaseMs;         s.restrike = g_restrikeMs;
+    s.restrike = g_restrikeMs;
     s.dimSecs = g_idleDimSecs;     s.ledColor = appState.ledStaticColor;
-    s.pwmFreq = g_pwmFreqHz;       s.relPwm = g_releasePwm;
+    s.pwmFreq = g_pwmFreqHz;
     s.velmult = g_velocityMult;
     s.fullpower = g_fullPowerMode; s.waterfall = g_waterfallEnabled;
-    s.keyviz = g_keyboardVizEnabled; s.softRel = g_softRelease;
+    s.keyviz = g_keyboardVizEnabled;
     s.leds = g_ledsEnabled;
     s.scrBri = appState.screenBrightness; s.ledBri = appState.ledBrightness;
     s.ledMode = (uint8_t)appState.ledMode; s.rainSpd = appState.rainbowSpeed;

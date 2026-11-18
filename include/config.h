@@ -15,7 +15,7 @@
 // Firmware version, semver. Exactly ONE line of this form: tools/publish-firmware.sh
 // parses it. The full version string adds the git hash at build time
 // ("2.0.0+a1b2c3d", fw_version_full() in fw_info.h; docs/BLE_OTA.md §2).
-#define FW_VERSION "2.1.3"
+#define FW_VERSION "2.1.4"
 
 // ===========================================================================
 // BOARD REVISION SELECT — set this to match the PHYSICAL board connected.
@@ -276,26 +276,12 @@ extern uint32_t g_idleDimSecs;
 #define DEFAULT_ISO_STRIKE_MS  95
 #define DEFAULT_ISO_GAP_MS     180
 
-// --- Soft release / anti-clank ---------------------------------------------
-// On NoteOff, instead of cutting the coil to 0 instantly (the retract spring
-// then SLAMS the plunger into its backstop → the "clank" you hear on the
-// piano), hold a reduced "cushion" current briefly. The partial magnetic
-// pull opposes the spring, easing the plunger back so it lands softly.
-//
-//   DEFAULT_SOFT_RELEASE = master on/off (1 = anti-clank enabled)
-//   DEFAULT_RELEASE_PWM  = cushion current (12-bit). MUST be low enough that
-//                          it does NOT hold the key pressed — just brakes the
-//                          retract. ~25-30% of full (1000-1200) is typical.
-//   DEFAULT_RELEASE_MS   = how long to apply the cushion before cutting to 0.
-//                          Keep short (15-30 ms) so release still feels crisp.
-// Tune live via "softrelease 0|1", "releasepwm <n>", "releasems <n>".
-//
-// NOTE: the cushion is a brief partial-PWM pulse, so on the non-isolated
-// board it adds a little switching per release. If it worsens PWM-mode
-// stability, disable with "softrelease 0".
-#define DEFAULT_SOFT_RELEASE   1
-#define DEFAULT_RELEASE_PWM    1100
-#define DEFAULT_RELEASE_MS     22
+// --- Soft release / anti-clank: REMOVED in 2.1.4 ----------------------------
+// The cushion (a weak PWM current held ~22 ms after NoteOff to brake the
+// plunger) was found to crash the keys in play. Every key-up is now a plain
+// cut to 0 through the verified-OFF path. `softrelease`, `releasepwm` and
+// `releasems` answer "unknown" and are gone from dump; their NVS keys are left
+// alone and never read.
 
 // --- Auto re-strike (tremolo sustain) --------------------------------------
 // A piano key only makes sound when STRUCK; holding it down is silent. So a

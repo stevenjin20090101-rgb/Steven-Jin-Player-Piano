@@ -79,7 +79,7 @@ const int kNumPowerBoards = sizeof(powerBoards) / sizeof(powerBoards[0]);
 //
 // ANCHORING RULE: the stamp is taken when a channel goes from believed-OFF to
 // ON and is NOT refreshed while the channel is still believed ON. Re-writing
-// an energized coil (repeated NoteOn, cushion write, a strike landing on a
+// an energized coil (repeated NoteOn, a strike landing on a
 // failed-OFF retry) therefore never slides the thermal deadline: the hold
 // ceiling is always measured from the first energize after the last VERIFIED
 // OFF, whatever the MIDI held/released bookkeeping says. Energize paths go
@@ -106,9 +106,8 @@ static inline void armOnAt(int board_idx, uint8_t semitone, uint32_t now) {
 
 // Energize inhibit (SAFETY.md rule 9), set for the whole life of a firmware
 // update session. While true, every place that drives a coil refuses: the
-// strike in fireNoteOnNow, the soft-release cushion in fireNoteOffNow (the
-// release goes straight to the verified OFF), manualFire/manualFireNote with
-// pwm != 0, and the sweep; dispatchNoteOn returns before it touches any timer.
+// strike in fireNoteOnNow, manualFire/manualFireNote with pwm != 0, and the
+// sweep; dispatchNoteOn returns before it touches any timer.
 // Releases are never inhibited. Loop task only, like the rest of this state.
 static bool s_energizeInhibit = false;
 
@@ -141,7 +140,6 @@ struct KeyTiming {
     uint32_t effMinStrikeMs;  // min-strike chosen for THIS note (isolated → longer)
     uint32_t pendingFireMs;
     uint32_t pendingReleaseMs;
-    uint32_t cushionOffMs;    // if non-zero: soft-release cushion active, cut to 0 at this time
     uint8_t  pendingVelocity;
     bool     fireAfterRelease; // see above: strike queued BEHIND a pending release
     bool     offAfterFire;     // see above: auto-release that queued strike
@@ -183,11 +181,6 @@ void set_max_hold_ms(uint32_t ms) {
     if (ms > MAX_HOLD_CEILING_MS)   ms = MAX_HOLD_CEILING_MS;
     g_maxHoldMs = ms;
 }
-
-// Soft release / anti-clank (see config.h).
-bool     g_softRelease = (DEFAULT_SOFT_RELEASE != 0);
-uint16_t g_releasePwm  = DEFAULT_RELEASE_PWM;
-uint32_t g_releaseMs   = DEFAULT_RELEASE_MS;
 
 void initPowerBoards() {
     for (int i = 0; i < kNumPowerBoards; i++) {
@@ -385,7 +378,6 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
     }
     if (midi_note < 128) {
         s_keyTiming[midi_note].onAtMs = now;       // for minStrike
-        s_keyTiming[midi_note].cushionOffMs = 0;   // supersede any in-flight cushion
         // Pick this note's minimum strike duration NOW, from how long it's been
         // since the last strike on any key. A lone note after silence gets the
         // longer isolated minimum so it's audible; a note inside a run keeps the
@@ -426,8 +418,7 @@ static bool tryChannelOff(int board_idx, uint8_t semitone) {
     return ok;
 }
 
-// Cut a channel to 0 and clear its cushion state. The TRUE "off". Used by the
-// non-cushion release path, cushion completion, and anywhere we need a
+// Cut a channel to 0. The TRUE "off": every release, and anywhere we need a
 // guaranteed off. Retry-on-failure is handled by tryChannelOff + the watchdog.
 static void hardOffNow(uint8_t midi_note) {
     int idx = boardForNote(midi_note);
@@ -437,13 +428,11 @@ static void hardOffNow(uint8_t midi_note) {
     uint8_t semitone = midi_note - b.midi_start;
     if (semitone >= 12) return;
     tryChannelOff(idx, semitone);            // clears s_onAt only on success
-    if (midi_note < 128) s_keyTiming[midi_note].cushionOffMs = 0;
 }
 
-// Internal release. With soft-release on, drops to a low cushion current
-// (braking the retract spring so the plunger lands softly instead of
-// clanking the backstop) and schedules the true cut-to-0 via cushionOffMs.
-// With soft-release off, cuts straight to 0.
+// Internal release: straight to 0 through the verified-OFF path (retrying).
+// The soft-release cushion (a weak current held ~22 ms after NoteOff) was
+// removed in 2.1.4: every key-up is a plain cut, with no extra I2C write.
 static bool fireNoteOffNow(uint8_t midi_note) {
     int idx = boardForNote(midi_note);
     if (idx < 0) return false;
@@ -451,48 +440,17 @@ static bool fireNoteOffNow(uint8_t midi_note) {
     if (!b.connected) return false;
     uint8_t semitone = midi_note - b.midi_start;
     if (semitone >= 12) return false;
-    uint8_t channel = kKeyToChannel[semitone];
 
-    // Channel already off and no cushion in flight → nothing to release.
-    // Without this guard, a duplicate NoteOff (common in real MIDI files,
-    // and guaranteed by octave-folding collisions) would write the cushion
-    // current to an IDLE coil — a spurious 22 ms energize pulse.
-    if (s_onAt[idx][semitone] == 0 &&
-        (midi_note >= 128 || s_keyTiming[midi_note].cushionOffMs == 0)) {
-        return true;
-    }
+    // Channel already off → nothing to release. A duplicate NoteOff (common in
+    // real MIDI files, and guaranteed by octave-folding collisions) writes
+    // nothing. A failed OFF keeps s_onAt set, so a later NoteOff still retries.
+    if (s_onAt[idx][semitone] == 0) return true;
 
-    // The cushion is current through the coil — an energize — so it is skipped
-    // while energize is inhibited (rule 9): straight to the verified OFF.
-    if (g_softRelease && g_releaseMs > 0 && g_releasePwm > 0 && midi_note < 128 &&
-        !s_energizeInhibit) {
-        uint32_t now = millis();
-        bool ok = b.chip.setPWM(channel, g_releasePwm);   // cushion current
-        if (ok) {
-            // Watchdog stays armed during the cushion (s_onAt), so even if the
-            // cushion-completion OFF later fails, the g_maxHoldMs timeout still
-            // force-releases this channel — the cushion is fully covered. The
-            // anchor is NOT refreshed: cushion current counts as ON, continuous
-            // with the strike it follows.
-            armOnAt(idx, semitone, now);
-            s_keyTiming[midi_note].cushionOffMs = now + g_releaseMs;
-        } else {
-            // Cushion write didn't land — don't depend on a cushion that
-            // isn't running. Go straight to the retrying OFF path.
-            tryChannelOff(idx, semitone);
-            s_keyTiming[midi_note].cushionOffMs = 0;
-        }
+    hardOffNow(midi_note);                           // straight to 0 (retrying)
 #if DEBUG_DISPATCH
-        Serial.printf("[disp] NoteOff note=%u → cushion %u for %lums (ok=%d)\n",
-                      midi_note, (unsigned)g_releasePwm, (unsigned long)g_releaseMs, ok);
+    Serial.printf("[disp] NoteOff note=%u → off (board %d ch=%u)\n",
+                  midi_note, idx, (unsigned)kKeyToChannel[semitone]);
 #endif
-    } else {
-        hardOffNow(midi_note);                       // straight to 0 (retrying)
-#if DEBUG_DISPATCH
-        Serial.printf("[disp] NoteOff note=%u → off (board %d ch=%u)\n",
-                      midi_note, idx, channel);
-#endif
-    }
     return true;
 }
 
@@ -564,31 +522,7 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
         uint32_t now = millis();
         KeyTiming &rt = s_keyTiming[midi_note];
 
-        // Rapid repeat WHILE a soft-release cushion is still holding the
-        // plunger partway down (cushionOffMs in flight): the key hasn't
-        // physically reset. Cut the cushion to 0 NOW so the plunger lifts,
-        // and space the re-strike by the full gap from this instant. Without
-        // this the cushion (g_releaseMs) can outlast the retrigger gap, so the
-        // deferred strike fires onto a still-depressed key and the repeat
-        // never articulates — the "repeats don't work with soft-release on"
-        // bug. (The gap alone couldn't fix it: it was measured from the
-        // cushion START, but the plunger only frees at the cushion END.)
-        if (rt.cushionOffMs != 0) {
-            hardOffNow(midi_note);                 // clears cushionOffMs + s_onAt
-            rt.pendingFireMs    = now + g_minRetriggerGapMs;
-            rt.pendingVelocity  = velocity;
-            rt.pendingReleaseMs = 0;
-            rt.fireAfterRelease = false;
-            rt.offAfterFire     = false;
-#if DEBUG_DISPATCH
-            Serial.printf("[disp] note=%u retrigger during cushion → cut + defer %lu ms\n",
-                          midi_note, (unsigned long)g_minRetriggerGapMs);
-#endif
-            return true;
-        }
-
-        // Normal retrigger gap, measured from the last full (cushion-free)
-        // release so the plunger has time to reset between strikes.
+        // Normal retrigger gap, measured from the last release so the plunger has time to reset between strikes.
         uint32_t lastOff = rt.lastOffMs;
         if (lastOff > 0) {
             uint32_t elapsed = now - lastOff;
@@ -631,8 +565,7 @@ bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity) {
     // Fire immediately. An immediate NoteOn supersedes ALL pending timers
     // for this note — clear the queued fire AND any scheduled release, or a
     // stale pendingReleaseMs from a prior deferred-off would later cut this
-    // freshly-struck note short (dropped held note). cushionOffMs is cleared
-    // inside fireNoteOnNow. The only pendingReleaseMs that can still be set
+    // freshly-struck note short (dropped held note). The only pendingReleaseMs that can still be set
     // here belongs to a NOT-YET-FIRED queued note (nothing is energized); a
     // pending release for an energized note never reaches this point — it is
     // queued behind, above.
@@ -853,9 +786,8 @@ void tickPendingFires() {
         if (kt.pendingReleaseMs != 0 && now >= kt.pendingReleaseMs) {
             if (kt.fireAfterRelease) {
                 // A repeat of this key is queued right behind this release.
-                // Skip the anti-clank cushion (it would hold the plunger
-                // partway down under the re-strike) and cut straight to 0
-                // through the verified-OFF path, then space the queued strike
+                // Cut straight to 0 through the verified-OFF path, then space
+                // the queued strike
                 // a full retrigger gap from this REAL lift, not the scheduled
                 // one (the tick may have run late).
                 hardOffNow((uint8_t)n);        // verified OFF or s_needOff retry
@@ -866,18 +798,10 @@ void tickPendingFires() {
                               (unsigned)n, (unsigned long)g_minRetriggerGapMs);
 #endif
             } else {
-                fireNoteOffNow((uint8_t)n);   // may START a soft-release cushion
+                fireNoteOffNow((uint8_t)n);   // verified OFF (retrying)
             }
             kt.lastOffMs = now;
             kt.pendingReleaseMs = 0;
-        }
-        // Soft-release cushion completion: after the cushion window, cut the
-        // channel fully to 0. This is the true release when soft-release is on.
-        // Do NOT touch lastOffMs here — it was already set at the real release
-        // moment (dispatchNoteOff or the pendingRelease branch above); the
-        // retrigger gap should measure from THAT, not the cushion-end time.
-        if (kt.cushionOffMs != 0 && now >= kt.cushionOffMs) {
-            hardOffNow((uint8_t)n);       // clears cushionOffMs + s_onAt
         }
     }
 }
@@ -939,8 +863,8 @@ void tickRestrike() {
         if (g_restrikeMs == 0) continue;
 
         // Don't interfere with a note mid-transition in the normal dispatch
-        // path (deferred gap fire, deferred/min-strike release, cushion).
-        if (kt.pendingFireMs || kt.pendingReleaseMs || kt.cushionOffMs) continue;
+        // path (deferred gap fire, deferred/min-strike release).
+        if (kt.pendingFireMs || kt.pendingReleaseMs) continue;
 
         if ((int32_t)(now - kt.reStrikeAtMs) < 0) continue;       // interval not up
         if (s_onAt[idx][st] == 0) continue;                       // not on → don't lift
@@ -1055,12 +979,11 @@ void allKeysOff() {
         }
     }
     // Clearing deferred timers is ALWAYS safe (they only ever energize):
-    // without this, a queued pendingFire or cushion could re-energize a
+    // without this, a queued pendingFire could re-energize a
     // solenoid moments after a panic/emergency-stop.
     for (int n = 0; n < 128; n++) {
         s_keyTiming[n].pendingFireMs    = 0;
         s_keyTiming[n].pendingReleaseMs = 0;
-        s_keyTiming[n].cushionOffMs     = 0;
         s_keyTiming[n].held             = false;   // stop any auto re-strike
         s_keyTiming[n].reStrikeLifting  = false;
         s_keyTiming[n].fireAfterRelease = false;
@@ -1088,7 +1011,7 @@ bool energize_inhibited()          { return s_energizeInhibit; }
 
 // READ-ONLY: clears nothing (rule 1). Walks EVERY board, online or offline —
 // an offline board's believed-on coil keeps this false (rule 5) — then every
-// key's deferred state: a queued strike, release, cushion or held note means
+// key's deferred state: a queued strike, release or held note means
 // the coil picture is about to change, so it is not "verified off" yet.
 bool coilsVerifiedOff() {
     for (int i = 0; i < kNumPowerBoards; i++) {
@@ -1098,7 +1021,7 @@ bool coilsVerifiedOff() {
     }
     for (int n = 0; n < 128; n++) {
         const KeyTiming &kt = s_keyTiming[n];
-        if (kt.pendingFireMs != 0 || kt.pendingReleaseMs != 0 || kt.cushionOffMs != 0 ||
+        if (kt.pendingFireMs != 0 || kt.pendingReleaseMs != 0 ||
             kt.held || kt.fireAfterRelease || kt.offAfterFire) {
             return false;
         }
@@ -1213,11 +1136,11 @@ bool manualFire(uint8_t board_idx, uint8_t channel, uint16_t pwm) {
     return true;
 }
 
-// Fire a MIDI note at a raw PWM, bypassing the whole velocity/soft-release
+// Fire a MIDI note at a raw PWM, bypassing the whole velocity
 // dispatch. Maps note → board + channel, then reuses manualFire's safe path.
 bool manualFireNote(uint8_t midi_note, uint16_t pwm) {
     // Refuse an inhibited energize BEFORE the timer clear below: a refused
-    // test strike must not cancel this key's pending release or cushion.
+    // test strike must not cancel this key's pending release.
     if (pwm != 0 && s_energizeInhibit) {
         Serial.println("[fire] REFUSED — energize inhibited (firmware update)");
         return false;
@@ -1228,11 +1151,10 @@ bool manualFireNote(uint8_t midi_note, uint16_t pwm) {
     uint8_t semitone = midi_note - b.midi_start;
     if (semitone >= 12) return false;
     // Also clear any dispatch timing state so the normal path doesn't fight
-    // the test (e.g. a lingering cushion or pending fire on this note).
+    // the test (e.g. a pending fire on this note).
     if (midi_note < 128) {
         s_keyTiming[midi_note].pendingFireMs    = 0;
         s_keyTiming[midi_note].pendingReleaseMs = 0;
-        s_keyTiming[midi_note].cushionOffMs     = 0;
         s_keyTiming[midi_note].fireAfterRelease = false;
         s_keyTiming[midi_note].offAfterFire     = false;
     }

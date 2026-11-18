@@ -172,8 +172,9 @@ static const char *const kAllowed[] = {
     "ledrest",                                    // 2.1.3: live only
     "dimsecs", "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velmult",
     "min", "minblack", "max", "humanvel", "humantime", "burstgap", "burstboost",
-    "minstrike", "isostrike", "isogap", "gap", "hold", "restrike", "softrelease",
-    "releasepwm", "releasems", "freq", "pedalon", "pedalhalf", "pedalup", "pedaldown",
+    "minstrike", "isostrike", "isogap", "gap", "hold", "restrike",
+    "softrelease", "releasepwm", "releasems",     // removed in 2.1.4: kept so they answer "unknown"
+    "freq", "pedalon", "pedalhalf", "pedalup", "pedaldown",
     "minwhite",                                   // the same variable as min
     // commands
     "status", "dump", "get", "help", "?", "off", "broadcast", "panic", "save",

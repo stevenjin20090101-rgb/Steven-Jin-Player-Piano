@@ -43,7 +43,7 @@ never ignore those return values.
    ALLCALL "success" is a bus-level ACK — it proves nothing about a chip
    that has dropped off the bus, so blanket clears skip offline boards.
 2. **Timers that energize are always cleared on any stop** (`allKeysOff`
-   wipes pending fires, deferred releases, cushions, and re-strike holds) —
+   wipes pending fires, deferred releases and re-strike holds) —
    otherwise a queued strike could re-energize a coil *after* an emergency stop.
 3. **Every energize arms the watchdog** (`s_onAt` timestamped) — including
    manual/test paths (`fire`, `rawnote`) and the bring-up `sweep`. (Until
@@ -55,7 +55,7 @@ never ignore those return values.
    (unwired PCA outputs 7–10) **refuse to energize at all**. The stamp is
    anchored to the *first* energize after the last **verified** OFF and is
    never refreshed while the channel is still believed ON (`armOnAt()`), so
-   re-writing an energized coil — a repeated NoteOn, a cushion write, a strike
+   re-writing an energized coil — a repeated NoteOn, a strike
    landing on a failed-OFF retry — cannot push the hold deadline out. The
    ceiling is a property of the coil's verified-OFF history, not of the MIDI
    held/released bookkeeping.
@@ -72,8 +72,9 @@ never ignore those return values.
 6. **The safety ticks run before note dispatch** at the top of `loop()`,
    and the per-loop dispatch drain is capped — a flood of incoming notes can
    never starve the release watchdog.
-7. **Cushion current counts as ON.** Soft-release's holding current is
-   watchdog-covered like a full strike.
+7. **A release writes no current.** The soft-release cushion (a weak
+   holding current after NoteOff) was removed in 2.1.4 after it crashed the
+   keys in play: every key-up is a plain cut through the verified OFF.
 8. **A NoteOn never cancels a pending release.** A repeat of a key whose
    previous note is still energized (its NoteOff was deferred by the
    min-strike rule) is queued *behind* that release and fires one retrigger
@@ -85,14 +86,13 @@ never ignore those return values.
    active (`docs/BLE_OTA.md`: from an accepted BEGIN until the session ends
    or the piano restarts) the dispatch layer itself refuses every energize:
    `set_energize_inhibit(true)` is checked at each place a coil is driven —
-   the strike in `fireNoteOnNow()`, the soft-release cushion in
-   `fireNoteOffNow()` (the release goes straight to the verified OFF),
+   the strike in `fireNoteOnNow()`,
    `manualFire()`/`manualFireNote()` with pwm ≠ 0, and the sweep — and
    `dispatchNoteOn()` refuses before it queues anything.
    Releases are never inhibited. The session stops the piano with
    `allKeysOff()` and only goes on once `coilsVerifiedOff()` — every channel
    on every board, online or offline, verified OFF, and no deferred strike,
-   release, cushion or held note — and at least 500 ms after the last
+   release or held note — and at least 500 ms after the last
    energize (`lastEnergizeMs()`). Dropping notes at the input and refusing
    console commands are the polite layer; the inhibit is the guarantee, and
    `tools/dispatch-sim` proves it. The inhibit is set *again* after

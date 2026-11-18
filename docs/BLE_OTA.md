@@ -325,8 +325,8 @@ reconnect ≤ 60 s, read 0x2A26 ► "2.1.0+a1b2c3d"             ≥ 30 s + a boa
 **Before READY, in this order** (the disconnect stop's all-off path, `main.cpp:1499–1506`):
 1. `set_energize_inhibit(true)` first (added 2026-10-01; SAFETY.md rule 9): from here until
    the session ends or the piano restarts, **the dispatch layer itself refuses every
-   energize** — the strike in `fireNoteOnNow()`, the soft-release cushion in `fireNoteOffNow()`
-   (the release goes straight to the verified OFF), `manualFire()`/`manualFireNote()` with pwm
+   energize** — the strike in `fireNoteOnNow()` (the soft-release cushion, removed in 2.1.4, was
+   one too), `manualFire()`/`manualFireNote()` with pwm
    ≠ 0, the sweep — and `dispatchNoteOn()` returns before it touches any timer. Releases are
    never inhibited. The dropped notes and refused commands below are the polite layer; the
    inhibit is the guarantee, and `tools/dispatch-sim` proves it (scenarios `inhibit`,
@@ -338,11 +338,11 @@ reconnect ≤ 60 s, read 0x2A26 ► "2.1.0+a1b2c3d"             ≥ 30 s + a boa
    recovery if that fails; `power_boards.cpp:895–957`) and `tickChipHealth()`, and each pass polls
    a new read-only `bool coilsVerifiedOff()` in `power_boards.cpp`: every board, **online or
    offline**, has `s_onAt == 0 && !s_needOff` on all 12 channels, and no key has `pendingFireMs`,
-   `pendingReleaseMs`, `cushionOffMs` or `held`. It clears nothing (SAFETY rule 1); an offline
+   `pendingReleaseMs` or `held` (`cushionOffMs` until 2.1.4). It clears nothing (SAFETY rule 1); an offline
    board's believed-on coil keeps it false (rule 5). Still false at 1,000 ms → ERR 1.
 4. **Quiet:** `millis() − lastEnergizeMs() < 500` → ERR 1. The new `lastEnergizeMs()` returns a
    stamp taken on every call of `armOnAt()` (`power_boards.cpp:89–92`), which every energize path
-   passes (strike, re-strike, deferred fire, cushion, `fire`, `rawnote`; the synchronous sweep
+   passes (strike, re-strike, deferred fire, `fire`, `rawnote`; the synchronous sweep
    ends in `allKeysOff()`); the anchoring is unchanged. The app's stop must precede BEGIN by ≥ 500 ms.
 
 **During a session** (PREPARING → REBOOTING, `ble_ota_session_active()`):

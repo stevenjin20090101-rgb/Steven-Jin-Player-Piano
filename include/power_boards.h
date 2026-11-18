@@ -46,8 +46,7 @@ bool broadcastAllOff();
 //
 // Energize inhibit. While set, the dispatch layer itself refuses EVERY
 // energize, at the places a coil is driven: the strike (NoteOn, deferred fire,
-// re-strike), the soft-release cushion (the release goes straight to the
-// verified OFF instead), manualFire/manualFireNote with pwm != 0, and the
+// re-strike), manualFire/manualFireNote with pwm != 0, and the
 // sweep; dispatchNoteOn returns false before it touches any timer or the held
 // flag. Releases are NEVER inhibited: NoteOff, the s_needOff retry, the hold
 // watchdog, allKeysOff(), broadcastAllOff() and tickChipHealth() run as usual.
@@ -58,7 +57,7 @@ bool energize_inhibited();
 // True only when every coil is verified OFF and nothing is waiting to change
 // that: every board, ONLINE OR OFFLINE, has all 12 channels confirmed off
 // (no s_onAt, no s_needOff), and no key has a pending fire, pending release,
-// cushion, held note or queued repeat. Read-only — clears nothing (rule 1);
+// held note or queued repeat. Read-only — clears nothing (rule 1);
 // an offline board's believed-on coil keeps it false (rule 5).
 bool coilsVerifiedOff();
 
@@ -157,11 +156,6 @@ extern uint32_t g_restrikeLiftMs;
 // alongside tickAutoRelease / tickPendingFires.
 void tickRestrike();
 
-// Soft release / anti-clank. See config.h for the mechanism.
-extern bool     g_softRelease;   // master on/off
-extern uint16_t g_releasePwm;    // cushion current (12-bit)
-extern uint32_t g_releaseMs;     // cushion duration before cut to 0
-
 // Drains deferred re-triggers + their auto-releases. Call once per loop
 // iteration alongside tickAutoRelease().
 void tickPendingFires();
@@ -182,7 +176,7 @@ void tickChipHealth();
 bool manualFire(uint8_t board_idx, uint8_t channel, uint16_t pwm);
 
 // Fire a MIDI note at a RAW PWM value (0..4095, or 4096 = full-on),
-// bypassing the velocity curve, per-key force, soft-release, min-strike —
+// bypassing the velocity curve, per-key force, min-strike —
 // everything. For the strike tester: lets you sweep force independently of
 // duration. pwm==0 releases. The auto-release watchdog still applies.
 bool manualFireNote(uint8_t midi_note, uint16_t pwm);

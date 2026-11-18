@@ -859,7 +859,7 @@ static uint32_t s_lastNoteActivityMs = 0;
 void piano_stop_for_update() {
     if (i2c_wave_active()) i2c_wave_stop(Serial);   // the bus must be up before the stop below
     flushEventQueue();       // queued notes would only be refused now: drop them
-    allKeysOff();            // release every coil, wipe every deferred strike/release/cushion
+    allKeysOff();            // release every coil, wipe every deferred strike/release
     clearLedReactive();      // no sustained LEDs
     pedal_release();         // dampers down: the piano stops ringing
     forgetSustain();         // ... and it stays up after the update
@@ -945,9 +945,6 @@ static void printHelp() {
         "    isostrike <0..500>       longer min-strike for a LONE short note (after silence) so it sounds\n"
         "    isogap <0..2000>         silence (ms) before a note counts as isolated (0 = boost off)\n"
         "    restrike <0|40..1000>    auto re-hit held notes every N ms (tremolo sustain; 0=off)\n"
-        "    softrelease 0|1          cushion current on release to stop the backstop clank\n"
-        "    releasepwm <0..4095>     cushion current level (default 1100)\n"
-        "    releasems <0..200>       cushion duration in ms (default 22)\n"
         "    keyforce <midi> <mult>   per-key force multiplier (0.0..4.0)\n"
         "    keyforce_all <mult>      set every key to this multiplier\n"
         "    keyforce_white <mult>    set every white key only\n"
@@ -1039,9 +1036,7 @@ static void printStatus() {
                    g_pwmFreqHz, g_fullPowerMode ? "ON" : "OFF",
                    (unsigned long)g_minRetriggerGapMs,
                    (unsigned long)g_minStrikeMs);
-    Console.printf("  softrelease=%s  releasepwm=%u  releasems=%lu ms\n",
-                   g_softRelease ? "ON" : "OFF",
-                   (unsigned)g_releasePwm, (unsigned long)g_releaseMs);
+    Console.println("  release: plain cut to 0 (soft release removed in 2.1.4)");
     Console.printf("  restrike=%lu ms (0=off; auto-tremolo for held notes)\n",
                    (unsigned long)g_restrikeMs);
     Console.printf("  leds=%s   dimsecs=%lu s (0=never)\n",
@@ -1314,9 +1309,6 @@ static const SettingRow kSettingRows[] = {
     INT_ROW ("gap",         g_minRetriggerGapMs),
     INT_ROW ("hold",        g_maxHoldMs),
     INT_ROW ("restrike",    g_restrikeMs),
-    BOOL_ROW("softrelease", g_softRelease),
-    INT_ROW ("releasepwm",  g_releasePwm),
-    INT_ROW ("releasems",   g_releaseMs),
     INT_ROW ("freq",        g_pwmFreqHz),
     DEC_ROW ("keyforce_white", keyForceMean(false)),
     DEC_ROW ("keyforce_black", keyForceMean(true)),
@@ -1469,12 +1461,11 @@ static void handleLine(char *line, ConsoleSource source) {
         }
     } else if (!strcmp(line, "snappy")) {
         // Lowest-latency "like before" preset: no LED blocking, no timing
-        // deferral, no cushion — every NoteOn fires the instant it arrives.
+        // deferral — every NoteOn fires the instant it arrives.
         g_ledsEnabled   = false;    // kill the 9ms/frame FastLED BLE-starve
         g_fullPowerMode = true;     // no PWM
         g_minRetriggerGapMs = 0;    // no retrigger deferral
         g_minStrikeMs   = 20;       // just enough to guarantee a strike
-        g_softRelease   = false;    // no release cushion / extra I2C write
         g_restrikeMs    = 0;        // no auto-tremolo
         g_humanizeMs    = 0;        // no random note-on deferral (arrival → strike is exact)
         g_humanizeVel   = 0;        // no random velocity scatter
@@ -1483,25 +1474,21 @@ static void handleLine(char *line, ConsoleSource source) {
         s_ledForceFrame = true;     // whenever the strip is on again, draw the mode afresh
         settings_save();
         Console.println("  SNAPPY preset applied + saved: leds off, fullpower, gap 0, "
-                        "minstrike 20, softrelease off, restrike off, humantime 0, humanvel 0 "
+                        "minstrike 20, restrike off, humantime 0, humanvel 0 "
                         "— lowest latency");
     } else if (!strcmp(line, "cinematic")) {
         // Expressive/soft preset for subtle pieces (Interstellar, Zimmer, etc.):
-        // velocity DYNAMICS on (so pp stays soft, ff swells), a gentle release
-        // cushion to kill the backstop clank, and short min-strike so quiet
+        // velocity DYNAMICS on (so pp stays soft, ff swells), and short min-strike so quiet
         // notes still sound. Leaves the user's min/max strike RANGE alone (that's
         // the piano-specific soft↔loud calibration) — this flips the enablers.
         g_fullPowerMode = false;    // <-- key: velocity→force dynamics (not max-every-note)
-        g_softRelease   = true;     // cushion current on release = no clank
-        g_releasePwm    = DEFAULT_RELEASE_PWM;
-        g_releaseMs     = 28;       // gentle let-down
         g_minStrikeMs   = 45;       // soft short notes still strike
         g_minRetriggerGapMs = 22;   // clean fast repeats without machine-gunning
         g_restrikeMs    = 0;        // no tremolo by default (add with 'restrike' if a note must sing)
         g_ledsEnabled   = true;     // lights on
         appState.ledMode = LED_MODE_NOTE_REACTIVE;
         settings_save();
-        Console.printf("  CINEMATIC preset applied + saved: velocity dynamics ON, soft-release ON, "
+        Console.printf("  CINEMATIC preset applied + saved: velocity dynamics ON, "
                        "minstrike 45, gap 22. Strike range kept (min=%u max=%u).\n"
                        "  For soft pp: lower 'min' until the quietest notes just barely sound.\n"
                        "  For a note that must sustain: 'restrike 120' adds a gentle tremolo.\n",
@@ -1596,22 +1583,11 @@ static void handleLine(char *line, ConsoleSource source) {
         Console.printf("  g_restrikeMs = %d ms — %s\n", v,
                        v ? "held notes auto re-hit at this interval (tremolo sustain)"
                          : "auto re-strike OFF (held notes strike once)");
-    } else if (!strncmp(line, "softrelease ", 12)) {
-        int v = atoi(line + 12);
-        g_softRelease = (v != 0);
-        Console.printf("  softrelease = %s — %s\n", g_softRelease ? "ON" : "OFF",
-                       g_softRelease ? "cushion current on release (anti-clank)"
-                                     : "release cuts straight to 0");
-    } else if (!strncmp(line, "releasepwm ", 11)) {
-        int v = atoi(line + 11);
-        if (v < 0 || v > 4095) { Console.println("  releasepwm out of range (0..4095)"); return; }
-        g_releasePwm = (uint16_t)v;
-        Console.printf("  g_releasePwm = %d (cushion current; keep low enough not to hold the key)\n", v);
-    } else if (!strncmp(line, "releasems ", 10)) {
-        int v = atoi(line + 10);
-        if (v < 0 || v > 200) { Console.println("  releasems out of range (0..200 ms)"); return; }
-        g_releaseMs = (uint32_t)v;
-        Console.printf("  g_releaseMs = %d ms (cushion duration before cut to 0)\n", v);
+    } else if (!strncmp(line, "softrelease", 11) || !strncmp(line, "releasepwm", 10) ||
+               !strncmp(line, "releasems", 9)) {
+        // Removed in 2.1.4: every key-up is a plain cut. "unknown" is the word
+        // the app reads as a refusal (docs/BLE_SETTINGS.md §5).
+        Console.println("  unknown — soft release was removed in 2.1.4 (every key-up is a plain cut)");
     } else if (!strncmp(line, "keyforce ", 9)) {
         int note; float mult;
         if (sscanf(line + 9, "%d %f", &note, &mult) != 2) {
@@ -1827,9 +1803,8 @@ static void handleLine(char *line, ConsoleSource source) {
         // it's on. Then drop the volume and the velocity floor.
         g_fullPowerMode = false;
         set_master_volume(55);
-        g_softRelease = true;            // cushion the release, no backstop clank
         settings_save();
-        Console.printf("  SOFT preset: fullpower OFF, volume 55%%, soft-release ON.\n"
+        Console.printf("  SOFT preset: fullpower OFF, volume 55%%.\n"
                        "  Still too loud? 'volume 35'. Notes dropping out? raise 'min' "
                        "(now %u) until the quietest ones sound again.\n", g_minStrikePWM);
     } else if (!strncmp(line, "minwhite ", 9)) {
@@ -1949,12 +1924,11 @@ static void handleLine(char *line, ConsoleSource source) {
         g_velCurve      = 1.7f;
         g_humanizeVel   = 6;
         g_humanizeMs    = 12;
-        g_softRelease   = true;
         set_master_volume(100);
         settings_save();
         Console.println("  EXPRESSIVE preset + saved:");
         Console.println("    min 2400 / max 4095  <- widened from a squashed range");
-        Console.println("    velcurve 1.7, humanvel 6, humantime 12 ms, soft-release on");
+        Console.println("    velcurve 1.7, humanvel 6, humantime 12 ms");
         Console.println("  Tune from here: if quiet notes DROP OUT, raise 'min' by 100 at a");
         Console.println("  time until every key sounds. If it's too loud, lower 'max'.");
     } else if (!strncmp(line, "pedalon ", 8)) {
@@ -2014,7 +1988,7 @@ static void handleLine(char *line, ConsoleSource source) {
         }
     } else if (!strncmp(line, "rawnote ", 8)) {
         // Strike tester: fire a MIDI note at a RAW pwm (0..4096), bypassing
-        // the velocity curve / soft-release / min-strike. Lets you sweep
+        // the velocity curve / min-strike. Lets you sweep
         // FORCE independently; the GUI handles the release timing (DURATION).
         int n, pwm;
         if (sscanf(line + 8, "%d %d", &n, &pwm) != 2) {

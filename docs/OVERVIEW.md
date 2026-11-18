@@ -88,7 +88,7 @@ Solenoids are basically on/off; these features turn them into an instrument:
 | **Isolated-note strike boost** | A lone staccato note is held longer so it actually sounds; notes inside a run stay short and fast |
 | Retrigger gap | Rapid same-key repeats get micro-spaced so the plunger resets |
 | Min-strike duration | Ultra-short notes are stretched enough to strike |
-| Soft release | Cushion current on release so keys don't clank |
+| Release | A plain cut on every key-up (the soft-release cushion was removed in 2.1.4) |
 | Auto re-strike | Optional tremolo so held notes keep singing |
 | **Feel presets** | 🎬 *Cinematic* (soft/expressive) and ⚡ *Snappy* (fast/dense) set everything at once |
 

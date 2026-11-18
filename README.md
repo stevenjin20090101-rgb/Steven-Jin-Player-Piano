@@ -71,7 +71,7 @@ DIP switch sets PCA9685 address bits A0–A2 (A3–A5 off). Boards are 0x40 (oct
 - **Velocity → PWM force mapping** (min/max/multiplier/per-key trim), or **Full-Power mode** (every note max force, zero PWM hum — the reliable default).
 - **Retrigger gap** — rapid same-key repeats get micro-spaced so the plunger can physically reset (fast trills all sound).
 - **Min-strike duration** — ultra-short MIDI notes are stretched just enough to actually strike (no more "forgotten" notes).
-- **Soft release** — brief cushion current on release so keys don't clank on the backstop.
+- **Plain release** — every key-up is a clean cut to 0 (the soft-release cushion was removed in 2.1.4: it crashed the keys).
 - **Auto re-strike (tremolo sustain)** — optionally re-hits held notes every N ms so sustained notes stay audible next to busy passages.
 
 **Reliability & self-healing** (see [`docs/SAFETY.md`](docs/SAFETY.md) for the full design)
@@ -118,7 +118,7 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 | `fire <board> <ch> <pwm>` | Drive one PCA9685 channel directly |
 | `sweep` / `pwm <n>` | Walk every key once (bring-up test) / set sweep force |
 | `min` `max` `velmult` `keyforce[_all/_white/_black]` | Velocity-curve shaping |
-| `gap` `minstrike` `restrike` `softrelease` `releasepwm` `releasems` | Timing feel |
+| `gap` `minstrike` `restrike` | Timing feel (soft release was removed in 2.1.4: every key-up is a plain cut) |
 | `fullpower 0\|1` | Max-force no-PWM mode (recommended ON) |
 | `freq <24..1526>` | PCA9685 PWM carrier (hum pitch) |
 | `hold <ms>` | Safety auto-release timeout (hard-capped at 4000 ms) |

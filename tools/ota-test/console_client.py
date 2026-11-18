@@ -40,7 +40,7 @@ EXPECTED_DUMP_NAMES = [
     "ledcolor", "ledtint", "ledfade", "ledambient", "ledrest", "dimsecs",
     "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velmult", "min", "minblack",
     "max", "humanvel", "humantime", "burstgap", "burstboost", "minstrike", "isostrike",
-    "isogap", "gap", "hold", "restrike", "softrelease", "releasepwm", "releasems", "freq",
+    "isogap", "gap", "hold", "restrike", "freq",
     "keyforce_white", "keyforce_black", "pedalon", "pedalhalf", "pedalup", "pedaldown",
 ]
 

@@ -65,7 +65,7 @@ board is "offline" (as a missing I²C ACK is today).
 
 | cmd | payload | use |
 |---|---|---|
-| `SET` | channel, pwm (12-bit; 4096 = full on) | one strike / release / cushion write |
+| `SET` | channel, pwm (12-bit; 4096 = full on) | one strike / release write |
 | `SETN` | n × (channel, pwm) | a chord to one board in one frame |
 | `ALLOFF` | — | the board's all-off (also as a broadcast to addr 0xFF, no reply; then polled) |
 | `CFG` | PWM frequency, hold ceiling | at boot and on `freq` |

@@ -31,13 +31,13 @@ have their own three:
   on every board. Every attempt must be refused with **zero non-zero PWM
   writes**, and each coil must still be released by the path that owns it: the
   hold watchdog (through a glitched OFF and its retry), the re-strike lift, a
-  NoteOff (straight to OFF, no cushion), a deferred release, `allKeysOff()`.
+  NoteOff (straight to OFF), a deferred release, `allKeysOff()`.
 - `verified_off` — strike, then `allKeysOff()` while every OFF write fails:
   `coilsVerifiedOff()` stays false until the watchdog's retry lands, and
   `lastEnergizeMs()` is the strike. Then a coil on a board that dropped
   offline: false until the health tick's verified per-chip all-off.
-- `verified_off_pending` — every coil verified off, yet a deferred strike, a
-  cushion the watchdog overtook, an OFF still owed, or a held note between
+- `verified_off_pending` — every coil verified off, yet a deferred strike, an
+  OFF still owed, or a held note between
   re-strikes keeps it false until cleared.
 
 And the bring-up sweep (SAFETY.md rule 3):

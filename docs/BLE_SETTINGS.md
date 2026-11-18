@@ -175,9 +175,6 @@ isogap=0..2000
 gap=0..300
 hold=50..4000
 restrike=0|40..1000
-softrelease=0|1
-releasepwm=0..4095
-releasems=0..200
 freq=24..1526
 keyforce_white=<mean multiplier of the white keys, 2 decimals>
 keyforce_black=<mean multiplier of the black keys, 2 decimals>
@@ -261,6 +258,14 @@ the palette's notes draw over the rest colour as it fades out. Cost: at rest the
 (the keyed LEDs at `ledbright`), never more; a still rest layer pushes one frame when its fade lands, and a fade
 pushes frames at the normal ~30 fps until it lands. Nothing in the solenoid path, the watchdogs or the safety
 layers changes. Refusal: `  usage: ledrest 0|1`.
+
+**Soft release removed** (2026-11-18, 2.1.4). The release cushion — a weak current held about 22 ms after a
+NoteOff to brake the plunger — crashed the keys in play, so it is gone: every key-up is a plain cut to 0 through
+the verified-OFF path, and no preset turns anything back on. `softrelease`, `releasepwm` and `releasems` are no
+longer in `dump` (`get` answers `  unknown setting`); writing any of them, over USB or Bluetooth, answers
+`  unknown — soft release was removed in 2.1.4 (every key-up is a plain cut)`, which the app reads as a refusal.
+The three stay on the Bluetooth allow-list only so that reply, not the USB-only refusal, comes back. Their old
+NVS values are left in place and never read.
 
 **`get <name>`** prints the single `name=value` line for any name in the list above
 (including the `!` facts), or `  unknown setting` for anything else. The name may be given
