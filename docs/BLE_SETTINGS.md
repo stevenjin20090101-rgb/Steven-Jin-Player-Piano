@@ -299,6 +299,15 @@ Commands (all trusted-only on a claimed piano):
   `  calstrike refused: that key is busy or has no board` (energized, or a queued strike, release or held note:
   a calibration never cancels a song's pending release). Refused while a firmware update runs.
 
+Replies the calibration also relies on (unchanged from earlier firmware): `fullpower 0` answers
+`  fullpower = OFF — velocity-mapped PWM with min/max/velmult.` (in step mode that PWM is the step's), and
+`fullpower 1` answers `  fullpower = ON — every NoteOn drives FULL_ON. Max force, no hum, no velocity.` (any
+value other than 0 is on). `save` answers `[settings] saved to NVS`, or `[settings] save FAILED …` when NVS
+cannot be opened (not a refusal word: check for `saved`). `velsteps 5` answers
+`  velsteps = 5: every note snaps to one of 5 fixed loudness steps`, with ` (shows once fullpower is 0)` added
+while Full Power is on. There is no call that prints every row at once: `steptable <note>` per key, and
+`!stepkeys` counts them.
+
 The calibration itself is the app's (the tablet's microphone measures each `calstrike`): it finds each key's
 softest reliable strike and the point where it stops getting louder, picks the steps that are audibly distinct,
 writes one `steptable` per key, then `velsteps N`, `fullpower 0` and `save`.
@@ -325,8 +334,12 @@ listed in `help`.
 else is refused). Allowed over NUS: `name value` for every tunable in `dump` except
 `keyforce_white` / `keyforce_black`; `minwhite` (the same variable as `min`); and the
 commands `status`, `dump`, `get`, `help`, `?`, `off`, `broadcast`, `panic`, `save`,
-`ledtest`, `testmin`, `testmax`, `note`, `restart` (from 2.1.1), and the presets `soft`,
-`cinematic`, `expressive`, `snappy`. A line's command is its first word, compared exactly.
+`ledtest`, `testmin`, `testmax`, `note`, `restart` (from 2.1.1), `steptable` and `calstrike`
+(from 2.1.5), and the presets `soft`, `cinematic`, `expressive`, `snappy`. A line's command is its
+first word, compared exactly. The tunables added since 2.1.2 (`ledcolor`, `ledtint`, `ledfade`,
+`ledambient`, `ledrest`, `velsteps`) are in `dump`, so they are allowed with the rest. `softrelease`,
+`releasepwm` and `releasems` (removed in 2.1.4) stay allowed only so they answer `  unknown — …`
+rather than this refusal. The list in code is `kAllowed` in `src/ble_console.cpp`.
 
 `restart` (docs/SMART_PLUG.md rule 10) makes the piano quiescent the way an update does —
 queued notes dropped, every coil released through the verified all-off, pedal up, strip
