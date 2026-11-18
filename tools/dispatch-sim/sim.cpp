@@ -430,6 +430,92 @@ static int scenarioHealthReprobe() {
     return hookResult("health_reprobe", s);
 }
 
+// Distinct loudness steps (2.1.5): with Full Power off and velsteps N, a
+// NoteOn snaps to one of N fixed PWMs. Note 60 = board 0x43 ch 0. Each probe
+// strikes, reads the written PWM, then releases, 500 ms apart (no gap, no burst).
+static uint16_t probe(uint32_t &t, uint8_t vel) {
+    at(t); dispatchNoteOn(60, vel);
+    at(t + 1); uint16_t v = chipFor(0x43)->ch[0];
+    at(t + 100); dispatchNoteOff(60);
+    t += 500;
+    return v;
+}
+static int scenarioSteps() {
+    g_fullPowerMode = false; g_velSteps = 5; g_velCurve = 1.0f;
+    g_minStrikePWM = 1000; g_maxStrikePWM = 3000; g_minStrikePWMBlack = 0;
+    g_humanizeVel = 20;                  // must be ignored in step mode
+    g_burstBoostPct = 0; g_masterVolume = 100; g_velocityMult = 1.0f;
+    uint32_t t = 0;
+    // Uncalibrated: N steps spread over min..max (curve 1.0 -> even).
+    const uint8_t  vels[5] = {1, 30, 64, 100, 127};
+    const uint16_t want[5] = {1000, 1500, 2000, 2500, 3000};
+    for (int i = 0; i < 5; i++) {
+        uint16_t v = probe(t, vels[i]);
+        if (v != want[i]) { char m[80]; snprintf(m, sizeof m, "uncalibrated vel %u -> %u, want %u", vels[i], v, want[i]); expect(false, m); }
+    }
+    bool same = true;
+    for (int i = 0; i < 10; i++) same &= probe(t, 64) == 2000;
+    expect(same, "no random scatter: vel 64 strikes 2000 ten times out of ten (humanvel 20 ignored)");
+    g_keyForceMult[60] = 1.5f;
+    expect(probe(t, 1) == 1500, "an uncalibrated key keeps its per-key force (1000 x 1.5)");
+    // Calibrated row: 3 measured PWMs; 5 bands map onto them, per-key force not applied.
+    g_stepTable[60].n = 3; g_stepTable[60].pwm[0] = 1200; g_stepTable[60].pwm[1] = 1700; g_stepTable[60].pwm[2] = 2600;
+    const uint16_t wantCal[5] = {1200, 1700, 1700, 2600, 2600};
+    for (int i = 0; i < 5; i++) {
+        uint16_t v = probe(t, vels[i]);
+        if (v != wantCal[i]) { char m[80]; snprintf(m, sizeof m, "calibrated vel %u -> %u, want %u", vels[i], v, wantCal[i]); expect(false, m); }
+    }
+    g_masterVolume = 50;
+    expect(probe(t, 127) == 1700, "volume 50 moves vel 127 down a band, onto a calibrated step");
+    expect(probe(t, 1) == 1200, "volume never goes below the lowest step");
+    g_masterVolume = 100;
+    // A flurry: under half the burst gap since the last strike lifts a note one step, never more.
+    g_burstBoostPct = 60; g_burstGapMs = 110;
+    at(t); dispatchNoteOn(62, 100);
+    at(t + 20); dispatchNoteOn(60, 1);
+    at(t + 21); uint16_t b = chipFor(0x43)->ch[0];
+    at(t + 120); dispatchNoteOff(60); dispatchNoteOff(62);
+    t += 500;
+    expect(b == 1700, "a soft note in a flurry goes up exactly one step (1200 -> 1700)");
+    expect(probe(t, 1) == 1200, "the same soft note alone stays on the lowest step");
+    // An overshoot clamps to the top; velsteps 0 is the smooth curve again.
+    g_stepTable[60].n = 0; g_keyForceMult[60] = 4.0f;
+    expect(probe(t, 127) == 4096, "a per-key force overshoot clamps to the top (4095, which the driver sends as FULL_ON)");
+    g_keyForceMult[60] = 1.0f; g_velSteps = 0; g_humanizeVel = 0;
+    expect(probe(t, 64) == 1000 + (uint16_t)(2000.0f * 63.0f / 126.0f + 0.5f), "velsteps 0: the smooth curve as before");
+    at(t + 1000);
+    expect(!anyChannelOn() && coilsVerifiedOff(), "all off, verified");
+    return hookResult("steps", "5 bands over min..max  no scatter  calibrated row 3 steps, no per-key force  volume lowers the band  flurry +1 step  overshoot clamps to the top  velsteps 0 smooth");
+}
+
+// The app's calibration strike (2.1.5): raw PWM for 100 ms, then the verified
+// OFF; refused over a busy key, with no board, or while the update inhibit holds.
+static int scenarioCalstrike() {
+    at(0);
+    expect(calStrike(60, 2400, 100), "a calibration strike on an idle key");
+    at(1);  expect(chipFor(0x43)->ch[0] == 2400, "struck at the raw PWM asked");
+    at(50); expect(!calStrike(60, 1000, 100), "refused while that key is still struck");
+    at(99); expect(chOn(0) && !coilsVerifiedOff(), "on for its 100 ms; not verified off meanwhile");
+    at(115); expect(!chOn(0) && offAtRel(0) >= 100 && offAtRel(0) <= 110, "released by the verified OFF at +100..110");
+    at(116); expect(coilsVerifiedOff(), "verified off once released");
+    at(200); dispatchNoteOn(60, 100);
+    at(210); expect(!calStrike(60, 2400, 100), "refused over a key a song is holding");
+    at(220); dispatchNoteOff(60);           // inside min-strike: release deferred
+    at(221); expect(!calStrike(60, 2400, 100), "refused while that key's release is pending (never cancels it)");
+    at(600); expect(calStrike(60, 4096, 100), "a full-power calibration strike");
+    at(601); expect(chipFor(0x43)->ch[0] == 4096, "4096 = FULL_ON");
+    at(800); expect(!chOn(0), "released");
+    expect(!calStrike(10, 2400, 100), "no board for note 10: refused");
+    g_failOffFrom = T0 + 995; g_failOffTo = T0 + 1015;   // its OFF write glitches
+    at(900); expect(calStrike(60, 3000, 100), "strike whose OFF will glitch");
+    at(1005); expect(chOn(0) && !coilsVerifiedOff(), "OFF failed: still owed, not verified off");
+    at(1100); expect(!chOn(0) && coilsVerifiedOff(), "the OFF retry landed");
+    set_energize_inhibit(true);
+    at(1200); expect(!calStrike(60, 2400, 100), "refused during a firmware update");
+    expect(!anyChannelOn() && coilsVerifiedOff(), "all off, verified");
+    return hookResult("calstrike", "raw PWM for 100 ms then verified OFF  busy/held/pending/no-board/inhibited refused  FULL_ON ok  glitched OFF retried");
+}
+
 int main(int argc, char** argv) {
     std::string sc = argc > 1 ? argv[1] : "rapid";
     initPowerBoards();
@@ -474,6 +560,10 @@ int main(int argc, char** argv) {
         return scenarioVerifiedOffPending();
     } else if (sc == "sweep") {          // the bring-up sweep: armed strikes, verified releases
         return scenarioSweep();
+    } else if (sc == "steps") {          // 2.1.5: distinct loudness steps
+        return scenarioSteps();
+    } else if (sc == "calstrike") {      // 2.1.5: the listening calibration's strike
+        return scenarioCalstrike();
     } else if (sc == "health_reprobe") { // a board off the bus: offline at once, back within ~1 s
         return scenarioHealthReprobe();
     }

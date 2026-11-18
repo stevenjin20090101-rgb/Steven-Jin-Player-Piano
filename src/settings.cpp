@@ -98,6 +98,21 @@ void settings_load() {
                        (unsigned)got);
     }
 
+    // Distinct loudness steps (2.1.5): the band count and the calibration rows.
+    g_velSteps = p.getUChar("velSteps", DEFAULT_VEL_STEPS);
+    if (g_velSteps == 1 || g_velSteps > VEL_STEPS_MAX) g_velSteps = DEFAULT_VEL_STEPS;
+    if (p.getBytes("stepTbl", g_stepTable, sizeof(g_stepTable)) != sizeof(g_stepTable)) {
+        memset(g_stepTable, 0, sizeof(g_stepTable));            // no calibration yet
+    }
+    for (int n = 0; n < 128; n++) {                               // a bad row is no row
+        StepRow &r = g_stepTable[n];
+        bool ok = r.n >= 2 && r.n <= VEL_STEPS_MAX;
+        for (uint8_t i = 0; ok && i < r.n; i++) {
+            if (r.pwm[i] == 0 || r.pwm[i] > 4095 || (i > 0 && r.pwm[i] <= r.pwm[i - 1])) ok = false;
+        }
+        if (!ok) memset(&r, 0, sizeof(r));
+    }
+
     p.end();
     Console.println("[settings] loaded from NVS");
 }
@@ -160,6 +175,8 @@ void settings_save() {
 
     // 128-float per-key force multiplier table.
     p.putBytes("keyForce", g_keyForceMult, sizeof(g_keyForceMult));
+    p.putUChar("velSteps", g_velSteps);
+    p.putBytes("stepTbl", g_stepTable, sizeof(g_stepTable));
 
     p.end();
     s_lastSaveMs = millis();
@@ -182,6 +199,8 @@ struct SettingsSnap {
              pedalOn, pedalHalf;
     uint8_t  scrBri, ledBri, ledMode, rainSpd, decay, inMode, touchVel, reactPal, ledGlow, ledTail, volume, humanVel, humanMs, dimFloor, burstBoost, ledAmbient;
     float    keyForce[128];
+    uint8_t  velSteps;
+    uint32_t stepGen;     // g_stepTableGen: any steptable change
 };
 static SettingsSnap s_snap;
 static bool s_snapValid = false;
@@ -216,6 +235,7 @@ static void takeSnap(SettingsSnap &s) {
     s.pedalOn = g_pedalEnabled; s.pedalUp = g_pedalUpCounts;
     s.pedalDn = g_pedalDownCounts; s.pedalHalf = g_pedalHalf;
     memcpy(s.keyForce, g_keyForceMult, sizeof(s.keyForce));
+    s.velSteps = g_velSteps; s.stepGen = g_stepTableGen;
 }
 
 void settings_tick() {

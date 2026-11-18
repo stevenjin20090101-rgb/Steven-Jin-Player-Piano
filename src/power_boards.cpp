@@ -235,6 +235,56 @@ static int boardForNote(uint8_t midi_note) {
     return -1;
 }
 
+// ---- Distinct loudness steps (2.1.5; power_boards.h) -----------------------
+uint8_t  g_velSteps     = DEFAULT_VEL_STEPS;
+StepRow  g_stepTable[128] = {};
+uint32_t g_stepTableGen = 0;
+
+uint8_t step_keys_calibrated() {
+    uint8_t k = 0;
+    for (int n = 0; n < 128; n++) {
+        if (g_stepTable[n].n >= 2 && g_stepTable[n].n <= VEL_STEPS_MAX) k++;
+    }
+    return k;
+}
+
+// The strike PWM for this note in step mode. Velocity, velmult and the master
+// volume pick one of N equal bands (no humanize); a note inside a tight flurry
+// (under half the burst gap since the last strike) goes up one band at most.
+// A calibrated key maps the band onto its own row; any other key spreads the
+// N steps over its floor..max with the velocity curve. *calibrated says which.
+static uint32_t stepPwmFor(uint8_t midi_note, uint8_t velocity, bool *calibrated) {
+    const uint8_t N = (g_velSteps > VEL_STEPS_MAX) ? VEL_STEPS_MAX : g_velSteps;   // >= 2 here
+    float v = (float)velocity * g_velocityMult;
+    if (g_masterVolume < 100) v = v * (float)g_masterVolume / 100.0f;
+    if (v > 127.0f) v = 127.0f;
+    if (v < 1.0f)   v = 1.0f;
+    int band = (int)((v - 1.0f) * (float)N / 127.0f);
+    if (band < 0) band = 0;
+    if (band > N - 1) band = N - 1;
+    if (g_burstBoostPct > 0 && g_burstGapMs > 0 && s_lastFireMs != 0 &&
+        millis() - s_lastFireMs < g_burstGapMs / 2 && band < N - 1) {
+        band++;                                    // a flurry: one step, never more
+    }
+    *calibrated = false;
+    if (midi_note < 128) {
+        const StepRow &r = g_stepTable[midi_note];
+        if (r.n >= 2 && r.n <= VEL_STEPS_MAX) {
+            *calibrated = true;
+            const uint32_t i = ((uint32_t)band * 2u * (r.n - 1u) + (N - 1u)) / (2u * (N - 1u));
+            return r.pwm[i < r.n ? i : r.n - 1u];
+        }
+    }
+    uint16_t lo = g_minStrikePWM;
+    if (g_minStrikePWMBlack > 0 && note_is_black(midi_note)) lo = g_minStrikePWMBlack;
+    uint16_t hi = g_maxStrikePWM;
+    if (hi < lo) hi = lo;
+    float t = (float)band / (float)(N - 1);
+    if (g_velCurve != 1.0f) t = powf(t, g_velCurve);
+    uint32_t pwm = lo + (uint32_t)((float)(hi - lo) * t + 0.5f);
+    return pwm > hi ? hi : pwm;
+}
+
 // Internal — actually writes to the PCA9685. NO gap checking, NO deferral.
 // Called both by the public dispatchNoteOn (immediate path) and the tick
 // function (when a deferred fire reaches its scheduled time).
@@ -268,12 +318,17 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
     uint8_t channel  = kKeyToChannel[semitone];
 
     uint32_t pwm;
+    bool calibrated = false;   // a steptable row set this PWM: no per-key force on top
+    bool stepped    = false;   // step mode: the volume already chose the band
     if (g_fullPowerMode) {
         // FULL_ON path — output stays HIGH for the entire cycle, no PWM
         // modulation. Maximum strike force, zero coil hum, no velocity
         // dynamics. setPWM() interprets >= 4095 as FULL_ON via the
         // ON_H[4] bit.
         pwm = 4096;
+    } else if (g_velSteps >= 2) {
+        pwm = stepPwmFor(midi_note, velocity, &calibrated);   // distinct steps (2.1.5)
+        stepped = true;
     } else {
         // Velocity-mapped PWM. Apply multiplier (clamped to 1..127), then
         // map to the tunable PWM floor/ceiling. Solenoids have a hard
@@ -327,8 +382,9 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
         }
     }
 
-    // Per-key force multiplier — final tweak after velocity mapping.
-    if (midi_note < 128) {
+    // Per-key force multiplier — final tweak after velocity mapping. A
+    // calibrated step already is this key's own measured force.
+    if (midi_note < 128 && !calibrated) {
         float m = g_keyForceMult[midi_note];
         if (m < 0.0f) m = 0.0f;
         if (m > 4.0f) m = 4.0f;
@@ -352,7 +408,7 @@ static bool fireNoteOnNow(uint8_t midi_note, uint8_t velocity) {
     // Volume is meaningless in Full-Power mode (that IS maximum force by
     // definition), so set_master_volume() turns Full Power off when you go
     // below 100 — the two are physically contradictory.
-    if (g_masterVolume < 100 && !g_fullPowerMode) {
+    if (g_masterVolume < 100 && !g_fullPowerMode && !stepped) {
         uint32_t floorPwm = g_minStrikePWM;
         // Keep a little headroom under the floor so 0% is quiet but still
         // strikes; going fully to 0 would just produce silent, dead keys.
@@ -1159,6 +1215,26 @@ bool manualFireNote(uint8_t midi_note, uint16_t pwm) {
         s_keyTiming[midi_note].offAfterFire     = false;
     }
     return manualFire((uint8_t)idx, kKeyToChannel[semitone], pwm);
+}
+
+bool calStrike(uint8_t midi_note, uint16_t pwm, uint32_t ms) {
+    if (midi_note >= 128 || pwm == 0 || pwm > 4096) return false;
+    if (s_energizeInhibit) return false;
+    int idx = boardForNote(midi_note);
+    if (idx < 0 || !powerBoards[idx].connected) return false;
+    const uint8_t semitone = midi_note - powerBoards[idx].midi_start;
+    if (semitone >= 12) return false;
+    const KeyTiming &kt = s_keyTiming[midi_note];
+    // Never over a sounding key, and never cancel its queued work (rule 8).
+    if (s_onAt[idx][semitone] != 0 || s_needOff[idx][semitone] ||
+        kt.pendingFireMs != 0 || kt.pendingReleaseMs != 0 || kt.held ||
+        kt.fireAfterRelease || kt.offAfterFire) {
+        return false;
+    }
+    if (!manualFireNote(midi_note, pwm)) return false;
+    uint32_t at = millis() + (ms ? ms : 1);
+    s_keyTiming[midi_note].pendingReleaseMs = at ? at : 1;   // tickPendingFires: verified OFF
+    return true;
 }
 
 // SAFE sweep: one solenoid at a time, sequentially across boards. Peak

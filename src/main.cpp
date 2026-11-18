@@ -984,6 +984,9 @@ static void printHelp() {
         "    ramp <midi> [f] [t] [s]  step one key up in force to FIND its floor by ear\n"
         "    dimfloor <0..255>        idle screen floor; 0 = fully dark (burn-in safe)\n"
         "    velcurve <0.4..3.0>      velocity->force curve; >1 = expressive soft end\n"
+        "    velsteps 0|2..8          loudness snaps to N fixed steps (0 = smooth curve)\n"
+        "    steptable <n> [p1..pN|clear]  a key's calibrated step PWMs (rising); clear = all\n"
+        "    calstrike <n> <pwm>      calibration: one strike at a raw PWM, 100 ms, then off\n"
         "    humanvel <0..30>         random velocity scatter (stops machine-identical notes)\n"
         "    humantime <0..40>        random note-on scatter in ms (chord roll)\n"
         "    expressive               anti-robot preset: wide range + curve + humanize + save\n"
@@ -1032,6 +1035,10 @@ static void printStatus() {
     Console.printf("  volume=%u%%  %s\n", g_masterVolume,
                    g_fullPowerMode ? "(FULL POWER ON - every note max force, volume has no effect)"
                                    : "(velocity dynamics active)");
+    if (g_fullPowerMode)       Console.println("  loudness: Full Power (every note the same)");
+    else if (g_velSteps >= 2)  Console.printf("  loudness: %u fixed steps, %u keys calibrated (the rest use min..max)\n",
+                                              (unsigned)g_velSteps, (unsigned)step_keys_calibrated());
+    else                       Console.println("  loudness: the smooth velocity curve (velsteps 0)");
     Console.printf("  freq=%u Hz   fullpower=%s   gap=%lu ms   minstrike=%lu ms\n",
                    g_pwmFreqHz, g_fullPowerMode ? "ON" : "OFF",
                    (unsigned long)g_minRetriggerGapMs,
@@ -1267,6 +1274,10 @@ static const SettingRow kSettingRows[] = {
     FACT_ROW("ledcolorproto", "%d", 1),
     // ledrest exists (docs/BLE_SETTINGS.md §4, 2.1.3).
     FACT_ROW("ledrestproto",  "%d", 1),
+    // velsteps / steptable / calstrike exist (docs/BLE_SETTINGS.md, 2.1.5), and
+    // how many keys hold a calibration row.
+    FACT_ROW("stepsproto",    "%d", 1),
+    FACT_ROW("stepkeys",      "%u", (unsigned)step_keys_calibrated()),
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
@@ -1295,6 +1306,7 @@ static const SettingRow kSettingRows[] = {
     BOOL_ROW("fullpower",   g_fullPowerMode),
     INT_ROW ("volume",      g_masterVolume),
     DEC_ROW ("velcurve",    g_velCurve),
+    INT_ROW ("velsteps",    g_velSteps),          // 2.1.5: 0 = smooth, 2..8 fixed steps
     DEC_ROW ("velmult",     g_velocityMult),
     INT_ROW ("min",         g_minStrikePWM),       // minwhite is the same variable
     INT_ROW ("minblack",    g_minStrikePWMBlack),
@@ -1350,6 +1362,7 @@ static bool energizesCoils(const char *line) {
     if (!strncmp(line, "pedaltest ", 10))                              return true;
     if (!strncmp(line, "fire ", 5))                                    return true;
     if (!strncmp(line, "rawnote ", 8))                                 return true;
+    if (!strncmp(line, "calstrike ", 10))                              return true;   // 2.1.5
     if (!strncmp(line, "note ", 5)) {
         int n, v;
         return sscanf(line + 5, "%d %d", &n, &v) == 2 && v != 0;
@@ -1896,6 +1909,89 @@ static void handleLine(char *line, ConsoleSource source) {
         g_idleDimFloor = (uint8_t)v;
         Console.printf("  idle dim floor = %d%s\n", v,
                        v == 0 ? " (screen goes FULLY dark - AMOLED burn-in safe)" : "");
+    } else if (!strncmp(line, "velsteps ", 9)) {
+        long v;
+        if (!parseLongIn(line + 9, 0, VEL_STEPS_MAX, &v) || v == 1) {
+            Console.printf("  velsteps out of range (0 or 2..%d)\n", VEL_STEPS_MAX);
+            return;
+        }
+        g_velSteps = (uint8_t)v;
+        if (v == 0) Console.println("  velsteps = 0: the smooth velocity curve");
+        else Console.printf("  velsteps = %ld: every note snaps to one of %ld fixed loudness steps%s\n", v, v,
+                            g_fullPowerMode ? " (shows once fullpower is 0)" : "");
+    } else if (!strcmp(line, "steptable clear")) {
+        memset(g_stepTable, 0, sizeof(g_stepTable));
+        g_stepTableGen++;
+        Console.println("  steptable cleared: every key spreads its steps over min..max");
+    } else if (!strncmp(line, "steptable ", 10)) {
+        // steptable <note>                 print the row
+        // steptable <note> clear           forget it
+        // steptable <note> <p1> .. <pN>    2..8 rising PWMs, 1..4095
+        char buf[96];
+        snprintf(buf, sizeof buf, "%s", line + 10);
+        char *save = nullptr;
+        char *tok = strtok_r(buf, " ", &save);
+        long note;
+        if (!tok || !parseLongIn(tok, 0, 127, &note)) {
+            Console.println("  usage: steptable <note> [p1..pN rising 1..4095 | clear] | steptable clear");
+            return;
+        }
+        StepRow &r = g_stepTable[note];
+        tok = strtok_r(nullptr, " ", &save);
+        if (!tok) {
+            if (r.n < 2) { Console.printf("  steptable %ld: not calibrated\n", note); return; }
+            Console.printf("  steptable %ld:", note);
+            for (uint8_t i = 0; i < r.n; i++) Console.printf(" %u", (unsigned)r.pwm[i]);
+            Console.println();
+            return;
+        }
+        if (!strcmp(tok, "clear")) {
+            memset(&r, 0, sizeof(r));
+            g_stepTableGen++;
+            Console.printf("  steptable %ld cleared\n", note);
+            return;
+        }
+        StepRow nr = {};
+        while (tok) {
+            long pwm;
+            if (nr.n >= VEL_STEPS_MAX || !parseLongIn(tok, 1, 4095, &pwm) ||
+                (nr.n > 0 && pwm <= nr.pwm[nr.n - 1])) {
+                Console.println("  usage: steptable <note> [p1..pN rising 1..4095 | clear] | steptable clear");
+                return;
+            }
+            nr.pwm[nr.n++] = (uint16_t)pwm;
+            tok = strtok_r(nullptr, " ", &save);
+        }
+        if (nr.n < 2) {
+            Console.println("  usage: steptable <note> [p1..pN rising 1..4095 | clear] | steptable clear");
+            return;
+        }
+        r = nr;
+        g_stepTableGen++;
+        Console.printf("  steptable %ld = %u steps (saved by save or the auto-save)\n", note, (unsigned)nr.n);
+    } else if (!strncmp(line, "calstrike ", 10)) {
+        // The app's listening calibration (2.1.5): one strike at a raw PWM for
+        // CAL_STRIKE_MS, then the verified OFF; one at a time, CAL_STRIKE_GAP_MS apart.
+        static uint32_t s_lastCalMs = 0;
+        int note, pwm;
+        char extra;
+        if (sscanf(line + 10, "%d %d %c", &note, &pwm, &extra) != 2 ||
+            note < 0 || note > 127 || pwm < 1 || pwm > 4096) {
+            Console.println("  usage: calstrike <note 0..127> <pwm 1..4096>");
+            return;
+        }
+        const uint32_t now = millis();
+        if (s_lastCalMs != 0 && now - s_lastCalMs < CAL_STRIKE_GAP_MS) {
+            Console.printf("  calstrike refused: too soon (one every %d ms)\n", CAL_STRIKE_GAP_MS);
+            return;
+        }
+        if (!calStrike((uint8_t)note, (uint16_t)pwm, CAL_STRIKE_MS)) {
+            Console.println("  calstrike refused: that key is busy or has no board");
+            return;
+        }
+        s_lastCalMs = now ? now : 1;
+        s_lastNoteActivityMs = now;
+        Console.printf("  calstrike %d at %d: struck for %d ms\n", note, pwm, CAL_STRIKE_MS);
     } else if (!strncmp(line, "velcurve ", 9)) {
         float f = atof(line + 9);
         if (f < 0.4f || f > 3.0f) { Console.println("  velcurve out of range (0.4..3.0)"); return; }

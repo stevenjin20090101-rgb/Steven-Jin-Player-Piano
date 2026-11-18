@@ -108,6 +108,35 @@ void setAllBoardsPWMFreq(uint16_t hz);
 // Stored in NVS as a 128-float blob.
 extern float g_keyForceMult[128];
 
+// Distinct loudness steps (2.1.5, Steven 2026-11-18: "distinct notes of soft
+// and hard"). With Full Power off and velsteps N (2..8), every NoteOn snaps to
+// one of N fixed strike forces: no random scatter (humanvel is ignored), the
+// master volume and velmult only move a note to a lower band, and a fast
+// flurry lifts a note at most one step. A key with a calibration row (the
+// app's listening calibration, `steptable`) strikes at its own measured PWMs
+// (2..8 of them, rising; per-key force is not applied on top); any other key
+// spreads the N steps over its min..max floor with the velocity curve.
+// velsteps 0 is the smooth curve as before 2.1.5. Stored in NVS: "velSteps"
+// and the "stepTbl" blob (128 rows of 18 bytes).
+#define VEL_STEPS_MAX 8
+struct StepRow {
+    uint16_t pwm[VEL_STEPS_MAX];   // rising PWMs, 1..4095; pwm[0..n-1] used
+    uint8_t  n;                    // 0 = not calibrated, else 2..8
+    uint8_t  pad;
+};
+extern uint8_t  g_velSteps;            // 0 = smooth, else 2..8 bands
+extern StepRow  g_stepTable[128];
+extern uint32_t g_stepTableGen;        // bumped on every change (auto-save sees it)
+uint8_t step_keys_calibrated();        // keys with a calibration row
+
+// One calibration strike (2.1.5): this key at a raw PWM (1..4096) for `ms`,
+// then the verified OFF, through manualFireNote() — the hold watchdog, the
+// update inhibit and the verified-OFF retry all apply. Refused (false, nothing
+// written) when the key is energized or has any queued strike, release or
+// held note (a calibration never cancels a pending release), or no board
+// answers for it.
+bool calStrike(uint8_t midi_note, uint16_t pwm, uint32_t ms);
+
 // Minimum gap (ms) between a NoteOff and the next NoteOn on the SAME
 // MIDI key. Defers the new NoteOn if too soon — pendingFireMs queue is
 // drained by tickPendingFires(). 0 = disabled (raw passthrough).

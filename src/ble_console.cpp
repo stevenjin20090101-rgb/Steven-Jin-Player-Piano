@@ -170,6 +170,7 @@ static const char *const kAllowed[] = {
     "ledreverse", "reactcolor", "ledglow", "velbright", "decay", "rainspeed",
     "ledcolor", "ledtint", "ledfade", "ledambient",   // 2.1.2
     "ledrest",                                    // 2.1.3: live only
+    "velsteps", "steptable", "calstrike",         // 2.1.5: distinct loudness steps
     "dimsecs", "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velmult",
     "min", "minblack", "max", "humanvel", "humantime", "burstgap", "burstboost",
     "minstrike", "isostrike", "isogap", "gap", "hold", "restrike",

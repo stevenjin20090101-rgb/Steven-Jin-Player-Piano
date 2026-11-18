@@ -38,7 +38,7 @@ EXPECTED_DUMP_NAMES = [
     "leds", "ledmode", "ledbright", "ledcount", "ledoffset", "ledscale", "ledtail",
     "ledreverse", "reactcolor", "ledglow", "velbright", "decay", "rainspeed",
     "ledcolor", "ledtint", "ledfade", "ledambient", "ledrest", "dimsecs",
-    "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velmult", "min", "minblack",
+    "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velsteps", "velmult", "min", "minblack",
     "max", "humanvel", "humantime", "burstgap", "burstboost", "minstrike", "isostrike",
     "isogap", "gap", "hold", "restrike", "freq",
     "keyforce_white", "keyforce_black", "pedalon", "pedalhalf", "pedalup", "pedaldown",

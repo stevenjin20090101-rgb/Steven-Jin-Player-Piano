@@ -15,7 +15,7 @@
 // Firmware version, semver. Exactly ONE line of this form: tools/publish-firmware.sh
 // parses it. The full version string adds the git hash at build time
 // ("2.0.0+a1b2c3d", fw_version_full() in fw_info.h; docs/BLE_OTA.md §2).
-#define FW_VERSION "2.1.4"
+#define FW_VERSION "2.1.5"
 
 // ===========================================================================
 // BOARD REVISION SELECT — set this to match the PHYSICAL board connected.
@@ -220,7 +220,20 @@ extern uint32_t g_idleDimSecs;
 // drives constant DC current with no switching, so no EMI. User can opt
 // into PWM mode from the web UI if their hardware has proper flyback
 // diodes + decoupling + ground separation.
-#define DEFAULT_FULL_POWER_MODE  1
+// 2.1.5 (Steven, 2026-11-18): the stock setting is now the distinct loudness
+// steps below, on PWM, with the risk above accepted. This default only reaches
+// a piano with no saved `fullpower`; a piano switches when its calibration (or
+// a person) writes `fullpower 0`. `panic` still forces Full Power on.
+#define DEFAULT_FULL_POWER_MODE  0
+
+// Distinct loudness steps (2.1.5): velsteps N = how many fixed strike forces a
+// note can snap to (0 = the smooth curve). See power_boards.h.
+#define DEFAULT_VEL_STEPS        5
+// The app's listening calibration strikes one key at a raw PWM: for this long,
+// then the verified OFF; never closer together than CAL_STRIKE_GAP_MS (any key),
+// so a key in calibration is energized at most a third of the time.
+#define CAL_STRIKE_MS            100
+#define CAL_STRIKE_GAP_MS        300
 
 // Minimum time between a key's NoteOff and the next NoteOn for that same
 // key. Mechanical solenoids need ~20-40 ms to retract; rapid passages in

@@ -137,6 +137,8 @@ Read-only facts are prefixed `!`. Exact list and order:
 !restartproto=1                     (the `restart` command exists, §5, from 2.1.1)
 !ledcolorproto=1                    (ledcolor, ledtint, ledfade and ledambient exist, from 2.1.2)
 !ledrestproto=1                     (ledrest exists, from 2.1.3)
+!stepsproto=1                       (velsteps, steptable and calstrike exist, from 2.1.5)
+!stepkeys=0..128                    (keys holding a calibration row)
 leds=0|1
 ledmode=0..3
 ledbright=0..255
@@ -161,6 +163,7 @@ keyviz=0|1
 fullpower=0|1
 volume=0..100
 velcurve=0.40..3.00
+velsteps=0|2..8
 velmult=0.10..5.00
 min=0..4095
 minblack=0..4095
@@ -266,6 +269,39 @@ longer in `dump` (`get` answers `  unknown setting`); writing any of them, over 
 `  unknown — soft release was removed in 2.1.4 (every key-up is a plain cut)`, which the app reads as a refusal.
 The three stay on the Bluetooth allow-list only so that reply, not the USB-only refusal, comes back. Their old
 NVS values are left in place and never read.
+
+**Distinct loudness steps** (2026-11-18, 2.1.5; `!stepsproto=1` and `!stepkeys` follow `!ledrestproto`). Steven:
+"distinct notes of soft and hard", and the usable force window is tiny, so as many clearly different steps as it
+holds. With `fullpower=0` and `velsteps` N (2..8), every NoteOn snaps to one of N fixed strike forces:
+
+- The band: velocity × `velmult` × `volume`/100, cut into N equal bands. No random scatter (`humanvel` is ignored),
+  and the volume only moves a note to a lower band, never below the lowest step. A note inside a tight flurry
+  (under half `burstgap` since the last strike, with `burstboost` above 0) goes up one step, never more.
+- A key with a calibration row strikes at its own measured PWMs: the N bands are mapped onto its row, rounding to
+  the nearest; per-key force (`keyforce`) is not applied on top. Any other key spreads the N steps over its
+  `min` (or `minblack`)..`max` with `velcurve`, then its per-key force, as before.
+- `velsteps 0` is the smooth curve exactly as before 2.1.5. Full Power on overrides both. **Stock**: `fullpower 0`,
+  `velsteps 5`; a piano with a saved `fullpower` keeps it until a person or the calibration writes `fullpower 0`.
+  `panic` still forces Full Power on.
+
+Commands (all trusted-only on a claimed piano):
+
+- `velsteps 0|2..8` — saved. Refusal: `  velsteps out of range (0 or 2..8)`.
+- `steptable <note> <p1> … <pN>` — that key's row: 2..8 PWMs, each 1..4095, strictly rising (4095 is full on).
+  `steptable <note>` prints it (`  steptable 60: 1200 1700 2600`, or `  steptable 60: not calibrated`);
+  `steptable <note> clear` forgets it; `steptable clear` forgets every row. Saved by `save` or the 30 s auto-save
+  (NVS blob `stepTbl`). Refusal: `  usage: steptable <note> [p1..pN rising 1..4095 | clear] | steptable clear`.
+- `calstrike <note> <pwm>` — the listening calibration's strike: that key at a raw PWM (1..4096; 4095 and up are
+  full on) for 100 ms, then the verified OFF, bypassing velocity, steps, per-key force and volume. One every 300 ms
+  across all keys, so a key in calibration is energized at most a third of the time. The hold watchdog, the update
+  lock-out and the verified-OFF retry apply as to any strike. Replies: `  calstrike 60 at 2400: struck for 100 ms`;
+  refusals `  usage: calstrike <note 0..127> <pwm 1..4096>`, `  calstrike refused: too soon (one every 300 ms)`,
+  `  calstrike refused: that key is busy or has no board` (energized, or a queued strike, release or held note:
+  a calibration never cancels a song's pending release). Refused while a firmware update runs.
+
+The calibration itself is the app's (the tablet's microphone measures each `calstrike`): it finds each key's
+softest reliable strike and the point where it stops getting louder, picks the steps that are audibly distinct,
+writes one `steptable` per key, then `velsteps N`, `fullpower 0` and `save`.
 
 **`get <name>`** prints the single `name=value` line for any name in the list above
 (including the `!` facts), or `  unknown setting` for anything else. The name may be given
