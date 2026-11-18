@@ -1,11 +1,11 @@
 {
-  "version": "2.1.3",
-  "build": "e256853",
-  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.3/firmware-2.1.3.bin",
-  "sizeBytes": 1144608,
-  "sha256": "7fb2fa201ff678602008281274ecd54b2936b733b498766af016946e6bfc2459",
-  "sig": "CuihdujKp04FNFnHkrSAuFgOpG5QBSj8gOB9uEV0Yq+KPYMVfhu/hl0NBHC+3JTYNcFUnsphfFMyJ1kji3iWBQ==",
+  "version": "2.1.4",
+  "build": "fc1b9b0",
+  "binUrl": "https://github.com/stevenjin20090101-rgb/Steven-Jin-Player-Piano/releases/download/fw-v2.1.4/firmware-2.1.4.bin",
+  "sizeBytes": 1143168,
+  "sha256": "64d9e9e712189585333a94fa6b7a365e5f6915fbb410c574ed0b694f954d36c7",
+  "sig": "chFgirh0P1XuLWYmQ0eNuNyNleNtVME5It8T4FoYNoYIzkwvdRhuv0VTGQTcQkW9uapyILTKEsof7jIq6+wJBw==",
   "minAppVersionCode": 35,
-  "notes": "Between pieces the strip glows solid in the colour shown, and fades to the notes when a piece plays.",
+  "notes": "Soft release removed: every key-up is now a plain cut, which stops the keys crashing. The album-art LED colour is unchanged.",
   "usbOnly": false
 }
