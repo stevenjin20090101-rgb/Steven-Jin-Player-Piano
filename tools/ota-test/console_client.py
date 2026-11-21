@@ -41,7 +41,7 @@ EXPECTED_DUMP_NAMES = [
     "dimfloor", "keyviz", "fullpower", "volume", "velcurve", "velsteps", "velmult", "min", "minblack",
     "max", "humanvel", "humantime", "burstgap", "burstboost", "minstrike", "isostrike",
     "isogap", "gap", "hold", "restrike", "freq",
-    "keyforce_white", "keyforce_black", "pedalon", "pedalhalf", "pedalup", "pedaldown",
+    "keyforce_white", "keyforce_black", "pedalon", "pedalhalf", "pedalup", "pedaldown", "boardaddr",
 ]
 
 

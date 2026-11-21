@@ -139,6 +139,8 @@ Read-only facts are prefixed `!`. Exact list and order:
 !ledrestproto=1                     (ledrest exists, from 2.1.3)
 !stepsproto=1                       (velsteps, steptable and calstrike exist, from 2.1.5)
 !stepkeys=0..128                    (keys holding a calibration row)
+!boardaddrproto=1                   (boardaddr exists, from 2.1.6)
+!strays=<hex,hex,…>                 (addresses answering on the power bus that are no board, pedal or All Call; empty with none)
 leds=0|1
 ledmode=0..3
 ledbright=0..255
@@ -185,6 +187,7 @@ pedalon=0|1
 pedalhalf=0|1
 pedalup=80..600
 pedaldown=80..600
+boardaddr=<7 lowercase hex addresses in board order, e.g. 40,41,42,43,44,4d,46>
 end
 ```
 
@@ -269,6 +272,34 @@ longer in `dump` (`get` answers `  unknown setting`); writing any of them, over 
 `  unknown — soft release was removed in 2.1.4 (every key-up is a plain cut)`, which the app reads as a refusal.
 The three stay on the Bluetooth allow-list only so that reply, not the USB-only refusal, comes back. Their old
 NVS values are left in place and never read.
+
+**A board at another address** (2026-11-20, 2.1.6; `!boardaddrproto=1` and `!strays` follow `!stepkeys`;
+`boardaddr` is the last row of `dump`). The new piano's C6 board (board 5, MIDI 84–95) answers at 0x4D: its A3
+switch never closes. Steven chose a setting on that piano over a solder bridge or a new switch, and "only locked to
+this piano".
+
+- `boardaddr <board 0..6> <hex>` (with or without `0x`, any case) or `boardaddr <board> default` (0x40 + board).
+  Device-specific: it lives only in this controller's NVS (`boardAddr`), a release never carries one, an update
+  keeps it, and a factory `reset` writes it back like the lock's keys (it describes this piano's hardware); only
+  `default` removes it. Saved at once. Trusted-only on a claimed piano.
+- Refused unless every coil is verified off with nothing queued (`coilsVerifiedOff()`), during an update or a wave
+  test, and for an address a board may not take. Replies: `  boardaddr 5 = 0x4D: OK (it answers)` or
+  `: MISSING (nothing answers there)` (the address takes either way); refusals
+  `  usage: boardaddr [<board 0..6> <hex 40..77>|default]`,
+  `  boardaddr refused: a coil is on or a note is queued: stop playing first`, `  boardaddr refused: updating firmware`,
+  `  boardaddr refused: the bus is busy (an update or a wave test)`, and for the address itself
+  `  boardaddr refused: ` followed by one of `a power board answers at 0x40..0x77 only`,
+  `0x78..0x7F are reserved on the I2C bus`, `0x70 is All Call (every board answers it)`,
+  `0x71, 0x72 and 0x74 are the boards' group addresses`, `that is the pedal board's address`,
+  `board <j> already answers at 0x<NN>`. A board's own default has no special pass.
+- `boardaddr` alone prints one line per board (`  boardaddr 5 = 0x4D (set on this piano; default 0x45) (MIDI 84-95):
+  OK`); `status`'s board lines end ` (set on this piano)` for a moved board.
+- At boot a saved address is applied before the board is first begun; one that would now clash is dropped (logged).
+  Board indices, `!boards`, the hold watchdog, the health re-probe and the verified OFF all work by board index and
+  follow the move; All Call still reaches every board.
+- `!strays`: the boot scan, re-probed whenever it is asked while every coil is verified off and no update or wave
+  test runs (otherwise the last list). A probe is an address byte and a stop; nothing is written. The app offers
+  "use it as C6 on this piano" when a board is MISSING and exactly one stray answers.
 
 **Distinct loudness steps** (2026-11-18, 2.1.5; `!stepsproto=1` and `!stepkeys` follow `!ledrestproto`). Steven:
 "distinct notes of soft and hard", and the usable force window is tiny, so as many clearly different steps as it

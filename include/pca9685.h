@@ -73,6 +73,7 @@ public:
                                                    // false = write not confirmed
     bool setPWMFrequency(uint16_t hz);             // 24..1526 Hz
     uint8_t address() const { return _addr; }
+    void    setAddress(uint8_t a) { _addr = a; }   // board address override (2.1.6)
 
 private:
     uint8_t _addr;

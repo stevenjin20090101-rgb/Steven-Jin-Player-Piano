@@ -426,6 +426,55 @@ static CRGB reactiveColorFor(uint8_t note, uint8_t vel) {
 // Scan the PCA9685 power-board bus (PCA_BUS — Wire on the original board,
 // Wire1 on the isolated board). Surfaces the power boards + any bus
 // neighbors so you can confirm dipswitch addresses and spot missing boards.
+// ---- Strays (2.1.6): chips answering on the power bus that aren't ours -----
+// An address that ACKs but is no configured board, not the pedal node and not
+// All Call: a board whose switches landed elsewhere (the new piano's C6 at
+// 0x4D). The app offers "use it as C6" when a board is MISSING and exactly one
+// stray answers. A probe is an address byte and a stop — no register is
+// written — and a fresh probe runs only while every coil is verified off,
+// so it never shares the bus with a note; otherwise the last list stands.
+static uint8_t s_strays[8];
+static int     s_nStrays = 0;
+
+static bool isOurs(uint8_t addr) {
+    if (addr == 0x70 || addr == PEDAL_PCA_ADDR) return true;
+    for (int i = 0; i < kNumPowerBoards; i++) {
+        if (powerBoards[i].chip.address() == addr) return true;
+    }
+    return false;
+}
+
+static void noteStrays(const uint8_t *acked, int n) {
+    s_nStrays = 0;
+    for (int i = 0; i < n; i++) {
+        const uint8_t a = acked[i];
+        if (a >= 0x40 && a <= 0x7F && !isOurs(a) && s_nStrays < (int)sizeof(s_strays)) s_strays[s_nStrays++] = a;
+    }
+}
+
+static void refreshStraysIfIdle() {
+    if (!coilsVerifiedOff() || ble_ota_session_active() || i2c_wave_active()) return;
+    uint8_t acked[16];
+    int n = 0;
+    {
+        WireGuard guard;
+        for (uint8_t addr = 0x40; addr <= 0x7F; ++addr) {
+            PCA_BUS.beginTransmission(addr);
+            if (PCA_BUS.endTransmission() == 0 && n < (int)sizeof(acked)) acked[n++] = addr;
+        }
+    }
+    noteStrays(acked, n);
+}
+
+static void straysValue(char *buf, size_t len) {
+    refreshStraysIfIdle();
+    size_t at = 0;
+    buf[0] = 0;
+    for (int i = 0; i < s_nStrays && at < len; i++) {
+        at += snprintf(buf + at, len - at, "%s%02x", i ? "," : "", s_strays[i]);
+    }
+}
+
 static void scanI2CBus() {
     Serial.println("[i2c] scanning power-board bus (0x03..0x7F)...");
     uint8_t detected[32];
@@ -438,14 +487,24 @@ static void scanI2CBus() {
             // was 125 blocking serial lines ≈ ¼ s of boot time for noise.)
             const char *name = "";
             if (addr == 0x70) name = "  (PCA9685 All-Call - any PCA9685 will ACK)";
-            else if (addr >= 0x40 && addr <= 0x46) name = "  (power board)";
-            else if (addr >= 0x40 && addr <= 0x6F) name = "  (possible PCA9685 individual)";
+            else if (addr >= 0x40 && addr <= 0x77) {
+                for (int i = 0; i < kNumPowerBoards; i++) {
+                    if (powerBoards[i].chip.address() == addr) { name = "  (power board)"; break; }
+                }
+            }
+            if (!*name && addr == PEDAL_PCA_ADDR) name = "  (pedal board)";
+            if (!*name && addr >= 0x40 && addr <= 0x6F) name = "  (possible PCA9685 individual: a misset board? see boardaddr)";
             Serial.printf("[i2c]   0x%02X ACK%s\n", addr, name);
             if (found < (int)(sizeof(detected) / sizeof(detected[0]))) {
                 detected[found] = addr;
             }
             ++found;
         }
+    }
+    noteStrays(detected, found < (int)sizeof(detected) ? found : (int)sizeof(detected));
+    for (int i = 0; i < s_nStrays; i++) {
+        Serial.printf("[i2c] stray 0x%02X: a board set elsewhere? `boardaddr <board> %02x` uses it\n",
+                      s_strays[i], s_strays[i]);
     }
     Serial.printf("[i2c] scan complete — %d device(s) on power bus\n", found);
     Serial.print  ("[i2c] addresses: ");
@@ -987,6 +1046,7 @@ static void printHelp() {
         "    velsteps 0|2..8          loudness snaps to N fixed steps (0 = smooth curve)\n"
         "    steptable <n> [p1..pN|clear]  a key's calibrated step PWMs (rising); clear = all\n"
         "    calstrike <n> <pwm>      calibration: one strike at a raw PWM, 100 ms, then off\n"
+        "    boardaddr [<b> <hex>|default]  a board answers at another address (its switch is stuck)\n"
         "    humanvel <0..30>         random velocity scatter (stops machine-identical notes)\n"
         "    humantime <0..40>        random note-on scatter in ms (chord roll)\n"
         "    expressive               anti-robot preset: wide range + curve + humanize + save\n"
@@ -1079,11 +1139,12 @@ static void printStatus() {
                    (unsigned long)g_i2cFailCount);
     Console.println("  boards:");
     for (int i = 0; i < kNumPowerBoards; i++) {
-        Console.printf("    [%d] 0x%02X (MIDI %u-%u): %s\n",
+        Console.printf("    [%d] 0x%02X (MIDI %u-%u): %s%s\n",
                        i, powerBoards[i].chip.address(),
                        powerBoards[i].midi_start,
                        powerBoards[i].midi_start + powerBoards[i].key_count - 1,
-                       powerBoards[i].connected ? "OK" : "MISSING");
+                       powerBoards[i].connected ? "OK" : "MISSING",
+                       g_boardAddr[i] ? " (set on this piano)" : "");
     }
 }
 
@@ -1278,6 +1339,10 @@ static const SettingRow kSettingRows[] = {
     // how many keys hold a calibration row.
     FACT_ROW("stepsproto",    "%d", 1),
     FACT_ROW("stepkeys",      "%u", (unsigned)step_keys_calibrated()),
+    // boardaddr exists (docs/BLE_SETTINGS.md, 2.1.6).
+    FACT_ROW("boardaddrproto", "%d", 1),
+    // Addresses answering on the power bus that are no board, pedal or All Call.
+    { "strays",    true, straysValue },
     BOOL_ROW("leds",        g_ledsEnabled),
     INT_ROW ("ledmode",     appState.ledMode),
     INT_ROW ("ledbright",   appState.ledBrightness),
@@ -1328,6 +1393,11 @@ static const SettingRow kSettingRows[] = {
     BOOL_ROW("pedalhalf",   g_pedalHalf),
     INT_ROW ("pedalup",     g_pedalUpCounts),
     INT_ROW ("pedaldown",   g_pedalDownCounts),
+    // 2.1.6: each board's address in board order, lowercase hex ("40,41,42,43,44,4d,46").
+    { "boardaddr", false, [](char *b, size_t n) {
+          size_t at = 0; b[0] = 0;
+          for (int i = 0; i < kNumPowerBoards && at < n; i++)
+              at += snprintf(b + at, n - at, "%s%02x", i ? "," : "", powerBoards[i].chip.address()); } },
 };
 
 #undef FACT_ROW
@@ -1511,6 +1581,7 @@ static void handleLine(char *line, ConsoleSource source) {
     } else if (!strcmp(line, "reset")) {
         settings_factory();
         ble_lock_after_settings_reset(Console);   // the lock is not a setting: keys written back
+        settings_keep_board_addrs();              // nor are the board addresses (2.1.6)
         Console.println("  reboot now to load factory defaults from config.h");
     } else if (!strcmp(line, "lock") || !strncmp(line, "lock ", 5) ||
                !strcmp(line, "claim") || !strncmp(line, "claim ", 6) ||
@@ -1909,6 +1980,52 @@ static void handleLine(char *line, ConsoleSource source) {
         g_idleDimFloor = (uint8_t)v;
         Console.printf("  idle dim floor = %d%s\n", v,
                        v == 0 ? " (screen goes FULLY dark - AMOLED burn-in safe)" : "");
+    } else if (!strcmp(line, "boardaddr")) {
+        for (int i = 0; i < kNumPowerBoards; i++) {
+            char was[40] = " (default)";
+            if (g_boardAddr[i]) snprintf(was, sizeof was, " (set on this piano; default 0x%02X)", board_default_addr(i));
+            Console.printf("  boardaddr %d = 0x%02X%s (MIDI %u-%u): %s\n", i, powerBoards[i].chip.address(),
+                           was,
+                           powerBoards[i].midi_start, powerBoards[i].midi_start + powerBoards[i].key_count - 1,
+                           powerBoards[i].connected ? "OK" : "MISSING");
+        }
+    } else if (!strncmp(line, "boardaddr ", 10)) {
+        // A board whose address switch can't be set (2.1.6): `boardaddr 5 0x4d`,
+        // or `boardaddr 5 default`. Only with every coil verified off; saved at once.
+        int board;
+        char arg[16], extra;
+        if (sscanf(line + 10, "%d %15s %c", &board, arg, &extra) != 2 || board < 0 || board >= kNumPowerBoards) {
+            Console.printf("  usage: boardaddr [<board 0..%d> <hex 40..77>|default]\n", kNumPowerBoards - 1);
+            return;
+        }
+        uint8_t addr;
+        if (!strcasecmp(arg, "default")) {
+            addr = board_default_addr(board);
+        } else {
+            const char *h = (arg[0] == '0' && (arg[1] == 'x' || arg[1] == 'X')) ? arg + 2 : arg;
+            char *end = nullptr;
+            const long v = strtol(h, &end, 16);
+            if (end == h || *end != '\0' || v < 0 || v > 0x7F) {
+                Console.printf("  usage: boardaddr [<board 0..%d> <hex 40..77>|default]\n", kNumPowerBoards - 1);
+                return;
+            }
+            addr = (uint8_t)v;
+        }
+        if (ble_ota_session_active() || i2c_wave_active()) {
+            Console.println("  boardaddr refused: the bus is busy (an update or a wave test)");
+            return;
+        }
+        const char *why = nullptr;
+        if (!board_set_address(board, addr, &why)) {
+            Console.printf("  boardaddr refused: %s\n", why ? why : "not allowed");
+            return;
+        }
+        settings_save();
+        g_status_dirty = true;
+        refreshStraysIfIdle();                    // the stray it took is ours now
+        Console.printf("  boardaddr %d = 0x%02X%s: %s\n", board, addr,
+                       addr == board_default_addr(board) ? " (default)" : "",
+                       powerBoards[board].connected ? "OK (it answers)" : "MISSING (nothing answers there)");
     } else if (!strncmp(line, "velsteps ", 9)) {
         long v;
         if (!parseLongIn(line + 9, 0, VEL_STEPS_MAX, &v) || v == 1) {

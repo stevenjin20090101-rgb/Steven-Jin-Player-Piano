@@ -27,6 +27,25 @@ extern PowerBoard powerBoards[];
 extern const int  kNumPowerBoards;
 
 void initPowerBoards();                                 // scan + configure
+
+// ---- Board address overrides (2.1.6) ----------------------------------------
+// A board whose DIP switch can't reach its address (the new piano's C6, board
+// 5: its A3 switch never closes, so it answers at 0x4D) is told where it
+// answers. g_boardAddr[i] is 0 for the default (0x40 + i), else the saved
+// address; initPowerBoards() applies it before the board's first begin(), so
+// the controller never speaks to the wrong chip. Everything else — the hold
+// watchdog, the health re-probe, !boards, the verified OFF — works by board
+// index and follows the move. All Call (0x70) reaches every board anyway.
+// Stored in NVS ("boardAddr", 8 bytes); `reset` writes it back, like the lock.
+extern uint8_t g_boardAddr[8];
+inline uint8_t board_default_addr(int board) { return (uint8_t)(0x40 + board); }
+// Whether `board` may answer at `addr`; on false, *why says why (a short phrase).
+bool board_addr_allowed(int board, uint8_t addr, const char **why);
+// Move a board live: only with every coil verified off, nothing queued and no
+// firmware update; the board is begun afresh at its new address (all OFF, the
+// PWM frequency). False (and *why) when refused; true means the address took,
+// whether or not a chip answers there (powerBoards[board].connected says).
+bool board_set_address(int board, uint8_t addr, const char **why);
 bool dispatchNoteOn(uint8_t midi_note, uint8_t velocity);
 bool dispatchNoteOff(uint8_t midi_note);
 void allKeysOff();                                      // panic / safety

@@ -98,6 +98,11 @@ void settings_load() {
                        (unsigned)got);
     }
 
+    // Board address overrides (2.1.6): applied and checked by initPowerBoards().
+    if (p.getBytes("boardAddr", g_boardAddr, sizeof(g_boardAddr)) != sizeof(g_boardAddr)) {
+        memset(g_boardAddr, 0, sizeof(g_boardAddr));
+    }
+
     // Distinct loudness steps (2.1.5): the band count and the calibration rows.
     g_velSteps = p.getUChar("velSteps", DEFAULT_VEL_STEPS);
     if (g_velSteps == 1 || g_velSteps > VEL_STEPS_MAX) g_velSteps = DEFAULT_VEL_STEPS;
@@ -176,6 +181,7 @@ void settings_save() {
     // 128-float per-key force multiplier table.
     p.putBytes("keyForce", g_keyForceMult, sizeof(g_keyForceMult));
     p.putUChar("velSteps", g_velSteps);
+    p.putBytes("boardAddr", g_boardAddr, sizeof(g_boardAddr));
     p.putBytes("stepTbl", g_stepTable, sizeof(g_stepTable));
 
     p.end();
@@ -201,6 +207,7 @@ struct SettingsSnap {
     float    keyForce[128];
     uint8_t  velSteps;
     uint32_t stepGen;     // g_stepTableGen: any steptable change
+    uint8_t  boardAddr[8];
 };
 static SettingsSnap s_snap;
 static bool s_snapValid = false;
@@ -236,6 +243,7 @@ static void takeSnap(SettingsSnap &s) {
     s.pedalDn = g_pedalDownCounts; s.pedalHalf = g_pedalHalf;
     memcpy(s.keyForce, g_keyForceMult, sizeof(s.keyForce));
     s.velSteps = g_velSteps; s.stepGen = g_stepTableGen;
+    memcpy(s.boardAddr, g_boardAddr, sizeof(s.boardAddr));
 }
 
 void settings_tick() {
@@ -261,6 +269,18 @@ void settings_factory() {
         Console.println("[settings] NVS cleared — reboot to load factory defaults");
     } else {
         Console.println("[settings] factory FAILED — could not open NVS RW");
+    }
+}
+
+void settings_keep_board_addrs() {
+    bool any = false;
+    for (uint8_t a : g_boardAddr) any |= (a != 0);
+    if (!any) return;
+    Preferences p;
+    if (p.begin(kNS, /*readOnly=*/false)) {
+        p.putBytes("boardAddr", g_boardAddr, sizeof(g_boardAddr));
+        p.end();
+        Console.println("[settings] board addresses kept (they describe the hardware)");
     }
 }
 

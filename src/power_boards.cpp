@@ -69,6 +69,7 @@ PowerBoard powerBoards[] = {
     {PCA9685(0x46),  96, 12, false},   // C7 – B7
 };
 const int kNumPowerBoards = sizeof(powerBoards) / sizeof(powerBoards[0]);
+uint8_t g_boardAddr[8] = {0};   // 0 = default 0x40 + board (2.1.6; power_boards.h)
 
 // millis() timestamp when each (board, semitone) was set ON. 0 means the
 // channel is believed OFF. tickAutoRelease() force-releases any channel whose
@@ -183,6 +184,19 @@ void set_max_hold_ms(uint32_t ms) {
 }
 
 void initPowerBoards() {
+    // Saved address overrides first (2.1.6), so no begin() ever goes to the
+    // wrong chip. One that is no longer allowed (it would clash) is dropped.
+    for (int i = 0; i < kNumPowerBoards; i++) {
+        const uint8_t want = g_boardAddr[i];
+        if (want == 0 || want == board_default_addr(i)) { g_boardAddr[i] = 0; continue; }
+        const char *why = nullptr;
+        if (board_addr_allowed(i, want, &why)) {
+            powerBoards[i].chip.setAddress(want);
+        } else {
+            Serial.printf("[piano] board %d: saved address 0x%02X dropped (%s)\n", i, want, why ? why : "not allowed");
+            g_boardAddr[i] = 0;
+        }
+    }
     for (int i = 0; i < kNumPowerBoards; i++) {
         auto& b = powerBoards[i];
         b.connected = b.chip.begin();
@@ -195,6 +209,45 @@ void initPowerBoards() {
     // so we're not buzzing at the factory 200 Hz default.
     setAllBoardsPWMFreq(g_pwmFreqHz);
     Serial.printf("[piano] PWM carrier set to %u Hz on all boards\n", g_pwmFreqHz);
+}
+
+// Where a board may answer: a PCA9685 individual address (0x40..0x77) that is
+// not reserved and not another board's. No pass for the board's own default:
+// if another board sits there now, two boards would share one chip.
+bool board_addr_allowed(int board, uint8_t addr, const char **why) {
+    static char reason[48];
+    const char *r = nullptr;
+    if (board < 0 || board >= kNumPowerBoards) r = "no such board";
+    else if (addr < 0x40 || addr > 0x7F)       r = "a power board answers at 0x40..0x77 only";
+    else if (addr >= 0x78)                      r = "0x78..0x7F are reserved on the I2C bus";
+    else if (addr == 0x70)                      r = "0x70 is All Call (every board answers it)";
+    else if (addr == 0x71 || addr == 0x72 || addr == 0x74) r = "0x71, 0x72 and 0x74 are the boards' group addresses";
+    else if (addr == PEDAL_PCA_ADDR)            r = "that is the pedal board's address";
+    else {
+        for (int j = 0; j < kNumPowerBoards; j++) {
+            if (j != board && powerBoards[j].chip.address() == addr) {
+                snprintf(reason, sizeof reason, "board %d already answers at 0x%02X", j, addr);
+                r = reason;
+                break;
+            }
+        }
+    }
+    if (r) { if (why) *why = r; return false; }
+    return true;
+}
+
+bool board_set_address(int board, uint8_t addr, const char **why) {
+    if (board < 0 || board >= kNumPowerBoards) { if (why) *why = "no such board"; return false; }
+    if (s_energizeInhibit)  { if (why) *why = "updating firmware"; return false; }
+    if (!coilsVerifiedOff()) { if (why) *why = "a coil is on or a note is queued: stop playing first"; return false; }
+    if (!board_addr_allowed(board, addr, why)) return false;
+    auto &b = powerBoards[board];
+    b.chip.setAddress(addr);
+    g_boardAddr[board] = (addr == board_default_addr(board)) ? 0 : addr;
+    b.connected = b.chip.begin();                  // all OFF at its new address
+    if (b.connected) b.chip.setPWMFrequency(g_pwmFreqHz);
+    Serial.printf("[piano] board %d now at 0x%02X: %s\n", board, addr, b.connected ? "OK" : "MISSING");
+    return true;
 }
 
 // Push a new PWM frequency to every connected board. Persists in

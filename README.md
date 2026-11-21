@@ -120,6 +120,7 @@ The same commands reach the piano over Bluetooth from the app, limited there to 
 | `min` `max` `velmult` `keyforce[_all/_white/_black]` | Velocity-curve shaping |
 | `gap` `minstrike` `restrike` | Timing feel (soft release was removed in 2.1.4: every key-up is a plain cut) |
 | `fullpower 0\|1` | Max-force no-PWM mode (stock OFF from 2.1.5: the loudness steps below) |
+| `boardaddr [<b> <hex>\|default]` | A board whose address switch is stuck answers elsewhere, on this piano only (`!strays` lists candidates) — 2.1.6, [BLE_SETTINGS.md](docs/BLE_SETTINGS.md) |
 | `velsteps 0\|2..8` `steptable <n> [p1..pN\|clear]` `calstrike <n> <pwm>` | Loudness snaps to N distinct steps (stock 5); a key's calibrated step PWMs; the listening calibration's strike — 2.1.5, [BLE_SETTINGS.md](docs/BLE_SETTINGS.md) |
 | `freq <24..1526>` | PCA9685 PWM carrier (hum pitch) |
 | `hold <ms>` | Safety auto-release timeout (hard-capped at 4000 ms) |

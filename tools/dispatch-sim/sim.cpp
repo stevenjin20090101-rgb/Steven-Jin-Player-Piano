@@ -516,6 +516,38 @@ static int scenarioCalstrike() {
     return hookResult("calstrike", "raw PWM for 100 ms then verified OFF  busy/held/pending/no-board/inhibited refused  FULL_ON ok  glitched OFF retried");
 }
 
+// Board address override (2.1.6): the new piano's C6 board (board 5, MIDI
+// 84-95) answers at 0x4D. Moved only while every coil is verified off; the
+// notes follow it; clashing and reserved addresses are refused.
+static int scenarioBoardAddr() {
+    const char *why = nullptr;
+    at(0);   dispatchNoteOn(84, 100);
+    at(10);  expect(!board_set_address(5, 0x4D, &why), "refused while a coil is on");
+    at(200); dispatchNoteOff(84);
+    at(400); expect(coilsVerifiedOff(), "idle");
+    expect(board_set_address(5, 0x4D, &why), "board 5 moves to 0x4D when idle");
+    expect(powerBoards[5].chip.address() == 0x4D && powerBoards[5].connected, "board 5 answers at 0x4D");
+    expect(g_boardAddr[5] == 0x4D, "the override is kept for saving");
+    const int strikes45 = chipFor(0x45) ? chipFor(0x45)->strikes[0] : 0;
+    at(500); dispatchNoteOn(84, 100);
+    at(501); expect(chipFor(0x4D) && chipFor(0x4D)->ch[0] != 0, "C6 now strikes the chip at 0x4D");
+    expect((chipFor(0x45) ? chipFor(0x45)->strikes[0] : 0) == strikes45, "nothing goes to 0x45 any more");
+    at(700); dispatchNoteOff(84);
+    at(900);
+    const uint8_t bad[] = {0x44, 0x46, 0x47, 0x70, 0x71, 0x72, 0x74, 0x78, 0x7F, 0x3F, 0x00};
+    for (uint8_t a : bad) {
+        why = nullptr;
+        if (board_set_address(5, a, &why)) { char m[64]; snprintf(m, sizeof m, "0x%02X should be refused", a); expect(false, m); }
+        else if (!why) { char m[64]; snprintf(m, sizeof m, "0x%02X refused without a reason", a); expect(false, m); }
+    }
+    expect(powerBoards[5].chip.address() == 0x4D, "a refused move leaves the board where it was");
+    expect(board_set_address(5, 0x45, &why) && g_boardAddr[5] == 0, "back to its default 0x45 (override cleared)");
+    set_energize_inhibit(true);
+    expect(!board_set_address(5, 0x4D, &why), "refused during a firmware update");
+    expect(!anyChannelOn() && coilsVerifiedOff(), "all off, verified");
+    return hookResult("boardaddr", "moved only when idle  notes follow to 0x4D  clashes + reserved refused with a reason  default clears  refused during update");
+}
+
 int main(int argc, char** argv) {
     std::string sc = argc > 1 ? argv[1] : "rapid";
     initPowerBoards();
@@ -564,6 +596,8 @@ int main(int argc, char** argv) {
         return scenarioSteps();
     } else if (sc == "calstrike") {      // 2.1.5: the listening calibration's strike
         return scenarioCalstrike();
+    } else if (sc == "boardaddr") {      // 2.1.6: a board at another address
+        return scenarioBoardAddr();
     } else if (sc == "health_reprobe") { // a board off the bus: offline at once, back within ~1 s
         return scenarioHealthReprobe();
     }

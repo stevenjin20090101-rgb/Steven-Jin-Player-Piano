@@ -32,6 +32,9 @@ void settings_load();
 void settings_save();
 void settings_tick();
 void settings_factory();
+// After `reset`: write the board address overrides back (2.1.6). They describe
+// the hardware, like the lock's keys, so a settings reset must not lose them.
+void settings_keep_board_addrs();
 
 // Crash-loop guard. Increments a NVS-backed counter at boot; after the
 // firmware has been up for >30 s without crashing, the counter resets to 0.
